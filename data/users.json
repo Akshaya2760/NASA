@@ -1,0 +1,12 @@
+[
+  {
+    "id": "usr_1794491438021_22dccf2f",
+    "name": "Astronaut Elena Vance",
+    "email": "elena.vance@nasa.gov",
+    "salt": "e7ccedfdcd926a1715ba8f70d78b362d",
+    "hash": "6953e1872c3f52a9cf5de85f0d9cb3160e489fdd549781d4b4e58c047e8bb752d7a2b59deb5688fa90d045549ae1db0b76380cc6f9dd7820438c27e24dd116de",
+    "role": "Principal Earth Scientist",
+    "institution": "NASA Goddard / EIC",
+    "createdAt": "2026-11-12T13:50:38.021Z"
+  }
+]
