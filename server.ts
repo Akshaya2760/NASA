@@ -1,25 +1,35 @@
-import express, { Request, Response } from 'express';
+
+import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import path from 'path';
-import fs from 'fs';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+
+import {
+  initMongoDB,
+  findUserByEmail,
+  insertUser,
+  getAllUsers,
+  updateUserRole,
+  deleteUser,
+  getMongoStatus,
+  recordSessionTelemetry,
+  getEngagementStats
+} from './database.js';
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+app.use(express.json({ limit: '1mb' }));
 
-app.use(express.json());
+const PORT = Number(process.env.PORT || 3000);
+const SESSION_SECRET =
+  process.env.SESSION_SECRET ||
+  'earth-jukebox-local-development-secret-change-this';
 
-// Persistent user database configuration
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
+const ROLES = ['admin', 'scientist', 'educator', 'citizen'] as const;
+type UserRole = typeof ROLES[number];
 
 interface StoredUser {
   id: string;
@@ -27,135 +37,138 @@ interface StoredUser {
   email: string;
   salt: string;
   hash: string;
-  role: 'admin' | 'scientist' | 'educator' | 'citizen';
+  role: UserRole;
   institution?: string;
   createdAt: string;
 }
 
-function getStoredUsers(): StoredUser[] {
-  try {
-    if (fs.existsSync(USERS_FILE)) {
-      const data = fs.readFileSync(USERS_FILE, 'utf-8');
-      return JSON.parse(data);
-    }
-  } catch (err) {
-    console.error('Error reading users file:', err);
-  }
-  return [];
+interface AuthRequest extends Request {
+  authenticatedUser?: {
+    id: string;
+    email: string;
+    role: UserRole;
+  };
 }
 
-function saveStoredUsers(users: StoredUser[]): void {
-  try {
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving users file:', err);
-  }
-}
+// --------------------------------------------------
+// GEMINI AI
+// --------------------------------------------------
 
-// Hash password with cryptographically secure salt using Node.js scrypt
+const ai = process.env.GEMINI_API_KEY
+  ? new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY
+    })
+  : null;
+
+const SYSTEM_INSTRUCTION = `
+You are AeroSonic AI, the Earth Jukebox NASA Earth Science
+sonification assistant.
+
+Explain Earth science datasets and translate visual data
+into understandable sound concepts.
+
+Specialize in:
+- Sea Surface Temperature
+- Atmospheric CO2 and Methane
+- Polar Ice and Cryosphere
+- Wildfires and aerosols
+- Vegetation and chlorophyll
+- Solar wind and auroras
+- Precipitation and storms
+
+Explain pitch, tempo, timbre and spatial sound in
+scientifically accurate and accessible language.
+
+Never claim to be an official NASA representative.
+`;
+
+// --------------------------------------------------
+// SECURITY
+// --------------------------------------------------
+
 function hashPassword(password: string, salt: string): string {
   return crypto.scryptSync(password, salt, 64).toString('hex');
 }
 
-// Registration endpoint - Secure backend validation & password hashing
-app.post('/api/auth/register', (req: Request, res: Response) => {
+function safeUser(user: StoredUser) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    institution: user.institution || 'NASA Earth Science Investigator',
+    avatarBg:
+      user.role === 'admin'
+        ? 'from-amber-500 to-rose-600'
+        : 'from-sky-500 to-indigo-600',
+    savedPresets: [
+      'Ocean Warming Pentatonic',
+      'Amazon Thermal Surge'
+    ],
+    bookmarks: [
+      'sea-surface-temp',
+      'atmospheric-co2'
+    ]
+  };
+}
+
+function createToken(user: StoredUser): string {
+  const payload = Buffer.from(
+    JSON.stringify({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      exp: Math.floor(Date.now() / 1000) + 86400
+    })
+  ).toString('base64url');
+
+  const signature = crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(payload)
+    .digest('base64url');
+
+  return `${payload}.${signature}`;
+}
+
+function verifyToken(token: string): any | null {
   try {
-    const name = req.body.name || req.body.fullName;
-    const email = req.body.email;
-    const password = req.body.password;
-    const confirmPassword = req.body.confirmPassword || password;
-    const role = req.body.role;
-    const institution = req.body.institution;
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
 
-    if (!name || typeof name !== 'string' || !name.trim()) {
-      return res.status(400).json({ error: 'Full Name is required.' });
+    const [payload, signature] = parts;
+
+    const expected = crypto
+      .createHmac('sha256', SESSION_SECRET)
+      .update(payload)
+      .digest();
+
+    const actual = Buffer.from(signature, 'base64url');
+
+    if (
+      actual.length !== expected.length ||
+      !crypto.timingSafeEqual(actual, expected)
+    ) {
+      return null;
     }
 
-    if (!email || typeof email !== 'string' || !email.includes('@')) {
-      return res.status(400).json({ error: 'A valid email address is required.' });
+    const data = JSON.parse(
+      Buffer.from(payload, 'base64url').toString()
+    );
+
+    if (data.exp < Math.floor(Date.now() / 1000)) {
+      return null;
     }
 
-    if (!password || typeof password !== 'string' || password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters in length.' });
-    }
-
-    if (password !== confirmPassword) {
-      return res.status(400).json({ error: 'Passwords do not match.' });
-    }
-
-    const cleanEmail = email.trim().toLowerCase();
-    const users = getStoredUsers();
-
-    if (users.some((u) => u.email.toLowerCase() === cleanEmail)) {
-      return res.status(409).json({ error: 'An investigator account is already registered with this email address.' });
-    }
-
-    const salt = crypto.randomBytes(16).toString('hex');
-    const hash = hashPassword(password, salt);
-    const assignedRole = role || (cleanEmail.includes('admin') ? 'admin' : 'scientist');
-
-    const newUser: StoredUser = {
-      id: 'usr_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex'),
-      name: name.trim(),
-      email: cleanEmail,
-      salt,
-      hash,
-      role: assignedRole,
-      institution: institution ? institution.trim() : 'NASA Space Apps Investigator',
-      createdAt: new Date().toISOString(),
-    };
-
-    users.push(newUser);
-    saveStoredUsers(users);
-
-    const safeUser = {
-      id: newUser.id,
-      name: newUser.name,
-      email: newUser.email,
-      role: newUser.role,
-      institution: newUser.institution,
-      avatarBg: assignedRole === 'admin' ? 'from-amber-500 to-rose-600' : 'from-sky-500 to-indigo-600',
-      savedPresets: ['Ocean Warming Pentatonic', 'Amazon Thermal Surge'],
-      bookmarks: ['sea-surface-temp', 'atmospheric-co2'],
-    };
-
-    const token = crypto.randomBytes(32).toString('hex');
-    logActivity('info', 'AuthGateway', `New investigator registered: ${cleanEmail} (${assignedRole})`);
-    return res.status(201).json({
-      success: true,
-      message: 'Investigator registered successfully.',
-      user: safeUser,
-      token,
-    });
-  } catch (err: any) {
-    console.error('Registration error:', err);
-    return res.status(500).json({ error: 'Internal server error processing registration.' });
-  }
-});
-
-// Initialize default admin user if not already present
-function initializeDefaultAdmin(): void {
-  const users = getStoredUsers();
-  if (!users.some((u) => u.email === 'admin@nasa.gov' || u.role === 'admin')) {
-    const salt = crypto.randomBytes(16).toString('hex');
-    const hash = hashPassword('admin123', salt);
-    const adminUser: StoredUser = {
-      id: 'usr_admin_default',
-      name: 'Director Marcus Vance',
-      email: 'admin@nasa.gov',
-      salt,
-      hash,
-      role: 'admin',
-      institution: 'NASA Earth Information Center / Directorate Operations',
-      createdAt: new Date().toISOString(),
-    };
-    users.push(adminUser);
-    saveStoredUsers(users);
+    return data;
+  } catch {
+    return null;
   }
 }
-initializeDefaultAdmin();
 
-// System Activity & Error Logging
+// --------------------------------------------------
+// ACTIVITY LOGS
+// --------------------------------------------------
+
 interface SystemLog {
   id: string;
   timestamp: string;
@@ -164,573 +177,901 @@ interface SystemLog {
   message: string;
 }
 
-const systemActivityLogs: SystemLog[] = [
-  {
-    id: 'log_1',
-    timestamp: new Date(Date.now() - 1000 * 60 * 18).toISOString(),
-    level: 'info',
-    service: 'EIC-Telemetry',
-    message: 'NASA EONET v3 telemetry stream connected and synchronized.',
-  },
-  {
-    id: 'log_2',
-    timestamp: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-    level: 'info',
-    service: 'SonificationEngine',
-    message: 'Web Audio API spatial synth audio buffer calibrated.',
-  },
-  {
-    id: 'log_3',
-    timestamp: new Date(Date.now() - 1000 * 60 * 6).toISOString(),
-    level: 'info',
-    service: 'MissionControl',
-    message: 'Administrator clearance gateway online.',
-  },
-];
+const systemActivityLogs: SystemLog[] = [];
 
-function logActivity(level: 'info' | 'warn' | 'error', service: string, message: string) {
+function logActivity(
+  level: SystemLog['level'],
+  service: string,
+  message: string
+) {
   systemActivityLogs.unshift({
-    id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
     level,
     service,
-    message,
+    message
   });
-  if (systemActivityLogs.length > 100) systemActivityLogs.pop();
+
+  if (systemActivityLogs.length > 100) {
+    systemActivityLogs.pop();
+  }
 }
 
-// Login endpoint for normal users & investigators
-app.post('/api/auth/login', (req: Request, res: Response) => {
+// --------------------------------------------------
+// DEFAULT ADMIN
+// --------------------------------------------------
+
+async function initializeDefaultAdmin(): Promise<void> {
+  const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  const password = process.env.ADMIN_PASSWORD;
+
+  if (!email || !password) {
+    console.log(
+      'Admin bootstrap skipped: configure ADMIN_EMAIL and ADMIN_PASSWORD.'
+    );
+    return;
+  }
+
+  const existing = await findUserByEmail(email);
+
+  if (existing) {
+    if (existing.role !== 'admin') {
+      console.warn('Configured admin account is not an admin.');
+    }
+    return;
+  }
+
+  const salt = crypto.randomBytes(16).toString('hex');
+
+  const admin: StoredUser = {
+    id: crypto.randomUUID(),
+    name: 'Earth Jukebox Administrator',
+    email,
+    salt,
+    hash: hashPassword(password, salt),
+    role: 'admin',
+    institution: 'NASA Earth Information Center',
+    createdAt: new Date().toISOString()
+  };
+
+  await insertUser(admin);
+
+  console.log('Initial administrator account created.');
+}
+
+// --------------------------------------------------
+// DATABASE
+// --------------------------------------------------
+
+let databaseReady = false;
+
+async function ensureDatabase(): Promise<boolean> {
+  if (databaseReady) return true;
+
   try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required.' });
+    const connected = await initMongoDB();
+
+    if (!connected) return false;
+
+    await initializeDefaultAdmin();
+
+    databaseReady = true;
+
+    console.log('Database initialization completed.');
+
+    return true;
+  } catch (error) {
+    console.error('MongoDB connection error:', error);
+    return false;
+  }
+}
+
+// MongoDB middleware
+app.use('/api', async (req, res, next) => {
+  if (req.path === '/health') return next();
+
+  try {
+    if (!(await ensureDatabase())) {
+      return res.status(503).json({
+        success: false,
+        error: 'Database unavailable. Please try again later.'
+      });
     }
 
-    const cleanEmail = String(email).trim().toLowerCase();
-    const users = getStoredUsers();
-    const user = users.find((u) => u.email.toLowerCase() === cleanEmail);
+    next();
+  } catch (error) {
+    console.error('Database middleware error:', error);
+
+    return res.status(503).json({
+      success: false,
+      error: 'Database connection failed.'
+    });
+  }
+});
+
+// --------------------------------------------------
+// AUTHENTICATION
+// --------------------------------------------------
+
+async function authenticate(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const header = req.headers.authorization;
+
+    if (!header?.startsWith('Bearer ')) {
+      return res.status(401).json({
+        error: 'Authentication required.'
+      });
+    }
+
+    const payload = verifyToken(header.slice(7));
+
+    if (!payload) {
+      return res.status(401).json({
+        error: 'Invalid or expired session.'
+      });
+    }
+
+    const user = await findUserByEmail(payload.email);
+
+    if (
+      !user ||
+      user.id !== payload.id ||
+      user.role !== payload.role
+    ) {
+      return res.status(401).json({
+        error: 'User session is no longer valid.'
+      });
+    }
+
+    req.authenticatedUser = {
+      id: user.id,
+      email: user.email,
+      role: user.role
+    };
+
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+
+    return res.status(401).json({
+      error: 'Authentication failed.'
+    });
+  }
+}
+
+function requireAdmin(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) {
+  if (req.authenticatedUser?.role !== 'admin') {
+    return res.status(403).json({
+      error: 'Administrator access required.'
+    });
+  }
+
+  next();
+}
+
+// --------------------------------------------------
+// REGISTER
+// --------------------------------------------------
+
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const {
+      name,
+      fullName,
+      email,
+      password,
+      confirmPassword,
+      institution
+    } = req.body;
+
+    const cleanName = name || fullName;
+
+    if (
+      typeof cleanName !== 'string' ||
+      !cleanName.trim()
+    ) {
+      return res.status(400).json({
+        error: 'Full name is required.'
+      });
+    }
+
+    if (
+      typeof email !== 'string' ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+    ) {
+      return res.status(400).json({
+        error: 'Enter a valid email address.'
+      });
+    }
+
+    if (
+      typeof password !== 'string' ||
+      password.length < 8
+    ) {
+      return res.status(400).json({
+        error: 'Password must contain at least 8 characters.'
+      });
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({
+        error: 'Passwords do not match.'
+      });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    const existing = await findUserByEmail(cleanEmail);
+
+    if (existing) {
+      return res.status(409).json({
+        error: 'An account already exists with this email.'
+      });
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+
+    const user: StoredUser = {
+      id: crypto.randomUUID(),
+      name: cleanName.trim(),
+      email: cleanEmail,
+      salt,
+      hash: hashPassword(password, salt),
+      role: 'scientist',
+      institution:
+        typeof institution === 'string' && institution.trim()
+          ? institution.trim()
+          : 'NASA Space Apps Investigator',
+      createdAt: new Date().toISOString()
+    };
+
+    await insertUser(user);
+
+    const token = createToken(user);
+
+    logActivity(
+      'info',
+      'AuthGateway',
+      `New investigator registered: ${cleanEmail}`
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: 'Investigator registered successfully.',
+      user: safeUser(user),
+      token
+    });
+  } catch (error: any) {
+    console.error('Registration error:', error);
+
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        error: 'An account already exists with this email.'
+      });
+    }
+
+    return res.status(500).json({
+      error: 'Registration failed.'
+    });
+  }
+});
+
+// --------------------------------------------------
+// LOGIN
+// --------------------------------------------------
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (
+      typeof email !== 'string' ||
+      typeof password !== 'string' ||
+      !password
+    ) {
+      return res.status(400).json({
+        error: 'Email and password are required.'
+      });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const user = await findUserByEmail(cleanEmail);
 
     if (!user) {
-      return res.status(401).json({ error: 'No account found with this email. Please register first.' });
+      return res.status(401).json({
+        error: 'Account not found. Please register first.'
+      });
     }
 
     const inputHash = hashPassword(password, user.salt);
-    const isMasterAdminBypass =
-      cleanEmail === 'admin@nasa.gov' && (password === 'admin' || password === 'admin123' || password === 'AdminPass2026!');
+    const inputBuffer = Buffer.from(inputHash, 'hex');
+    const storedBuffer = Buffer.from(user.hash, 'hex');
 
-    if (inputHash !== user.hash && !isMasterAdminBypass) {
-      logActivity('warn', 'AuthGateway', `Failed login attempt for ${cleanEmail}`);
-      return res.status(401).json({ error: 'Incorrect password credentials.' });
+    const valid =
+      inputBuffer.length === storedBuffer.length &&
+      crypto.timingSafeEqual(inputBuffer, storedBuffer);
+
+    if (!valid) {
+      logActivity(
+        'warn',
+        'AuthGateway',
+        `Failed login: ${cleanEmail}`
+      );
+
+      return res.status(401).json({
+        error: 'Incorrect email or password.'
+      });
     }
 
-    const safeUser = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      institution: user.institution || 'NASA Earth Science Investigator',
-      avatarBg: user.role === 'admin' ? 'from-amber-500 to-rose-600' : 'from-sky-500 to-indigo-600',
-      savedPresets: ['Ocean Warming Pentatonic', 'Amazon Thermal Surge'],
-      bookmarks: ['sea-surface-temp', 'atmospheric-co2'],
-    };
+    const token = createToken(user);
 
-    const token = crypto.randomBytes(32).toString('hex');
-    logActivity('info', 'AuthGateway', `User logged in: ${user.email} (${user.role})`);
+    logActivity(
+      'info',
+      'AuthGateway',
+      `User logged in: ${cleanEmail}`
+    );
 
     return res.json({
       success: true,
-      message: 'Investigator authenticated successfully.',
-      user: safeUser,
-      token,
+      message: 'Login successful.',
+      user: safeUser(user),
+      token
     });
-  } catch (err: any) {
-    console.error('Login error:', err);
-    return res.status(500).json({ error: 'Internal server error processing login.' });
+  } catch (error) {
+    console.error('Login error:', error);
+
+    return res.status(500).json({
+      error: 'Login failed.'
+    });
   }
 });
 
-// Dedicated Admin Login endpoint
-app.post('/api/auth/admin-login', (req: Request, res: Response) => {
+// --------------------------------------------------
+// ADMIN LOGIN
+// --------------------------------------------------
+
+app.post('/api/auth/admin-login', async (req, res) => {
   try {
-    const { email, password, directAdminKey } = req.body;
-    const cleanEmail = email ? String(email).trim().toLowerCase() : 'admin@nasa.gov';
-    const users = getStoredUsers();
+    const { email, password } = req.body;
 
-    const isMasterBypass =
-      directAdminKey === 'NASA-EIC-MASTER-KEY' ||
-      (cleanEmail === 'admin@nasa.gov' && (!password || password === 'admin' || password === 'admin123' || password === 'AdminPass2026!'));
-
-    let adminUser = users.find((u) => u.email.toLowerCase() === cleanEmail && u.role === 'admin');
-
-    if (isMasterBypass && !adminUser) {
-      adminUser = users.find((u) => u.role === 'admin') || {
-        id: 'usr_admin_default',
-        name: 'Director Marcus Vance',
-        email: 'admin@nasa.gov',
-        salt: 'admin_salt',
-        hash: 'admin_hash',
-        role: 'admin',
-        institution: 'NASA Earth Information Center / Mission Control',
-        createdAt: new Date().toISOString(),
-      };
-    } else if (!isMasterBypass) {
-      if (!adminUser) {
-        logActivity('warn', 'MissionControl', `Admin login rejected for non-admin: ${cleanEmail}`);
-        return res.status(403).json({ error: 'Administrative clearance required. Account not found or unauthorized.' });
-      }
-      const inputHash = hashPassword(password || '', adminUser.salt);
-      if (inputHash !== adminUser.hash) {
-        logActivity('warn', 'MissionControl', `Failed admin authentication attempt for: ${cleanEmail}`);
-        return res.status(401).json({ error: 'Invalid administrative security credentials.' });
-      }
+    if (
+      typeof email !== 'string' ||
+      typeof password !== 'string'
+    ) {
+      return res.status(400).json({
+        error: 'Admin email and password are required.'
+      });
     }
 
-    const safeUser = {
-      id: adminUser.id,
-      name: adminUser.name,
-      email: adminUser.email,
-      role: 'admin' as const,
-      institution: adminUser.institution || 'NASA Earth Information Center / Directorate Operations',
-      avatarBg: 'from-amber-500 to-rose-600',
-      savedPresets: ['Voyager Harmonic Master', 'Cryosphere Extreme Descent'],
-      bookmarks: ['polar-ice-mass', 'sea-surface-temp', 'atmospheric-co2'],
-    };
+    const user = await findUserByEmail(
+      email.trim().toLowerCase()
+    );
 
-    const token = crypto.randomBytes(32).toString('hex');
-    logActivity('info', 'MissionControl', `Administrator session initiated: ${adminUser.email}`);
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({
+        error: 'Administrator access required.'
+      });
+    }
+
+    const inputHash = hashPassword(password, user.salt);
+    const inputBuffer = Buffer.from(inputHash, 'hex');
+    const storedBuffer = Buffer.from(user.hash, 'hex');
+
+    const valid =
+      inputBuffer.length === storedBuffer.length &&
+      crypto.timingSafeEqual(inputBuffer, storedBuffer);
+
+    if (!valid) {
+      return res.status(401).json({
+        error: 'Invalid administrator credentials.'
+      });
+    }
+
+    logActivity(
+      'info',
+      'MissionControl',
+      `Administrator logged in: ${user.email}`
+    );
 
     return res.json({
       success: true,
-      message: 'NASA EIC Administrative Clearance Granted.',
-      user: safeUser,
-      token,
-      isAdmin: true,
+      message: 'Administrator authenticated.',
+      user: safeUser(user),
+      token: createToken(user),
+      isAdmin: true
     });
-  } catch (err: any) {
-    console.error('Admin login error:', err);
-    return res.status(500).json({ error: 'Failed to process admin authentication.' });
+  } catch (error) {
+    console.error('Admin login error:', error);
+
+    return res.status(500).json({
+      error: 'Admin authentication failed.'
+    });
   }
 });
 
-// Admin User Management - List Users
-app.get('/api/admin/users', (_req: Request, res: Response) => {
-  try {
-    const users = getStoredUsers();
-    const safeUsers = users.map((u) => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      role: u.role,
-      institution: u.institution || 'NASA Space Apps Investigator',
-      createdAt: u.createdAt,
-    }));
-    return res.json({ success: true, count: safeUsers.length, users: safeUsers });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to retrieve registered users.' });
-  }
-});
+// --------------------------------------------------
+// CURRENT USER
+// --------------------------------------------------
 
-// Admin User Management - Update Role
-app.patch('/api/admin/users/:id/role', (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const { role } = req.body;
-    if (!['admin', 'scientist', 'educator', 'citizen'].includes(role)) {
-      return res.status(400).json({ error: 'Invalid user role specified.' });
+app.get(
+  '/api/auth/me',
+  authenticate,
+  async (req: AuthRequest, res) => {
+    try {
+      const user = await findUserByEmail(
+        req.authenticatedUser!.email
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          error: 'User not found.'
+        });
+      }
+
+      return res.json({
+        success: true,
+        user: safeUser(user)
+      });
+    } catch (error) {
+      console.error('Current user error:', error);
+
+      return res.status(500).json({
+        error: 'Unable to retrieve user.'
+      });
     }
-    const users = getStoredUsers();
-    const user = users.find((u) => u.id === id);
-    if (!user) return res.status(404).json({ error: 'User not found.' });
-
-    user.role = role;
-    saveStoredUsers(users);
-    logActivity('info', 'UserRegistry', `Updated user role for ${user.email} -> ${role}`);
-    return res.json({ success: true, message: `Role updated to ${role}` });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to update user role.' });
   }
-});
+);
 
-// Admin User Management - Delete User
-app.delete('/api/admin/users/:id', (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    let users = getStoredUsers();
-    const initialLen = users.length;
-    users = users.filter((u) => u.id !== id);
-    if (users.length === initialLen) {
-      return res.status(404).json({ error: 'User not found.' });
+// --------------------------------------------------
+// ADMIN USER MANAGEMENT
+// --------------------------------------------------
+
+app.get(
+  '/api/admin/users',
+  authenticate,
+  requireAdmin,
+  async (_req, res) => {
+    try {
+      const users = await getAllUsers();
+
+      return res.json({
+        success: true,
+        count: users.length,
+        users: users.map(safeUser)
+      });
+    } catch (error) {
+      console.error('Get users error:', error);
+
+      return res.status(500).json({
+        error: 'Unable to retrieve users.'
+      });
     }
-    saveStoredUsers(users);
-    logActivity('warn', 'UserRegistry', `Deleted user account ID: ${id}`);
-    return res.json({ success: true, message: 'User deleted successfully.' });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to delete user.' });
   }
-});
+);
 
-// Admin Monitoring - Activity Logs & System Health
-app.get('/api/admin/activity-logs', (_req: Request, res: Response) => {
-  return res.json({
-    success: true,
-    logs: systemActivityLogs,
-    telemetryStatus: {
-      eonetApi: 'ONLINE',
-      webAudioSynth: 'CALIBRATED',
-      database: 'OPERATIONAL',
-      activeUsers: getStoredUsers().length,
-      aiGuide: Boolean(ai) ? 'ONLINE' : 'STANDBY',
-    },
-  });
-});
+app.patch(
+  '/api/admin/users/:id/role',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res) => {
+    try {
+      const { role } = req.body;
 
-// NASA EONET Live Event Stream Caching & Sonification Processing
-interface CachedNasaEvents {
-  timestamp: number;
-  events: any[];
-}
+      if (
+        typeof role !== 'string' ||
+        !ROLES.includes(role as UserRole)
+      ) {
+        return res.status(400).json({
+          error: 'Invalid user role.'
+        });
+      }
 
-const DEFAULT_NASA_EVENTS = [
-  {
-    id: 'EONET_6412',
-    title: 'Tropical Cyclone Megan - Gulf of Carpentaria',
-    category: 'severeStorms',
-    categoryTitle: 'Severe Storms',
-    date: '2026-03-18T00:00:00Z',
-    lat: -14.2,
-    lng: 136.8,
-    magnitude: 85,
-    magnitudeUnit: 'kts',
-    sourceUrl: 'https://eonet.gsfc.nasa.gov',
-    sourceName: 'JTWC / NASA EIC',
-    sonificationFreqHz: 562.5,
-    sonificationWave: 'sawtooth',
-    acousticNote: '563 Hz Wind Resonator (Velocity: 85 kts)',
-  },
-  {
-    id: 'EONET_6380',
-    title: 'Amery Ice Shelf Calving Anomaly - D-30 Event',
-    category: 'seaLakeIce',
-    categoryTitle: 'Sea and Lake Ice',
-    date: '2026-02-04T12:00:00Z',
-    lat: -69.5,
-    lng: 71.3,
-    magnitude: 1420,
-    magnitudeUnit: 'km²',
-    sourceUrl: 'https://eonet.gsfc.nasa.gov',
-    sourceName: 'USNIC / NASA Cryosphere',
-    sonificationFreqHz: 85.0,
-    sonificationWave: 'triangle',
-    acousticNote: '85 Hz Polar Ice Shelf Calving Tone',
-  },
-  {
-    id: 'EONET_6490',
-    title: 'Pantanal Biosphere Wetland Thermal Pulse',
-    category: 'wildfires',
-    categoryTitle: 'Wildfires',
-    date: '2026-08-11T18:30:00Z',
-    lat: -17.8,
-    lng: -57.4,
-    magnitude: 34500,
-    magnitudeUnit: 'acres',
-    sourceUrl: 'https://eonet.gsfc.nasa.gov',
-    sourceName: 'MODIS / VIIRS',
-    sonificationFreqHz: 683.0,
-    sonificationWave: 'square',
-    acousticNote: '683 Hz Thermal Crackle (34,500 acres)',
-  },
-  {
-    id: 'EONET_6510',
-    title: 'Kilauea Halemaumau Caldera Eruption Surge',
-    category: 'volcanoes',
-    categoryTitle: 'Volcanoes',
-    date: '2026-06-08T06:15:00Z',
-    lat: 19.42,
-    lng: -155.29,
-    magnitude: 4.2,
-    magnitudeUnit: 'VEI',
-    sourceUrl: 'https://eonet.gsfc.nasa.gov',
-    sourceName: 'USGS / NASA EO',
-    sonificationFreqHz: 130.8,
-    sonificationWave: 'sawtooth',
-    acousticNote: '130 Hz Volcanic Seismic Pulse',
-  },
-  {
-    id: 'EONET_6525',
-    title: 'Saharan Air Layer (SAL) Aerosol Dust Storm',
-    category: 'severeStorms',
-    categoryTitle: 'Severe Storms',
-    date: '2026-07-22T14:00:00Z',
-    lat: 18.2,
-    lng: -31.5,
-    magnitude: 55,
-    magnitudeUnit: 'kts',
-    sourceUrl: 'https://eonet.gsfc.nasa.gov',
-    sourceName: 'NASA Suomi NPP / OMPS',
-    sonificationFreqHz: 427.5,
-    sonificationWave: 'sawtooth',
-    acousticNote: '428 Hz Wind Resonator (Velocity: 55 kts)',
-  },
-  {
-    id: 'EONET_6533',
-    title: 'Weddell Sea Sea-Ice Extent Minimum Anomaly',
-    category: 'seaLakeIce',
-    categoryTitle: 'Sea and Lake Ice',
-    date: '2026-02-28T00:00:00Z',
-    lat: -73.1,
-    lng: -45.0,
-    magnitude: 2100,
-    magnitudeUnit: 'km²',
-    sourceUrl: 'https://eonet.gsfc.nasa.gov',
-    sourceName: 'NSIDC / NASA Goddard',
-    sonificationFreqHz: 85.0,
-    sonificationWave: 'triangle',
-    acousticNote: '85 Hz Polar Ice Shelf Calving Tone',
-  },
-];
+      if (
+        req.params.id === req.authenticatedUser!.id &&
+        role !== 'admin'
+      ) {
+        return res.status(400).json({
+          error: 'You cannot remove your own administrator role.'
+        });
+      }
 
-let cachedEvents: CachedNasaEvents = {
-  timestamp: Date.now(),
-  events: DEFAULT_NASA_EVENTS,
-};
-const CACHE_TTL_MS = 90 * 1000; // 90 seconds cache
+      await updateUserRole(req.params.id, role as UserRole);
 
-app.get('/api/nasa/current-events', async (_req: Request, res: Response) => {
+      logActivity(
+        'info',
+        'UserRegistry',
+        `User role updated: ${req.params.id} -> ${role}`
+      );
+
+      return res.json({
+        success: true,
+        message: 'User role updated successfully.'
+      });
+    } catch (error) {
+      console.error('Update role error:', error);
+
+      return res.status(500).json({
+        error: 'Failed to update user role.'
+      });
+    }
+  }
+);
+
+app.delete(
+  '/api/admin/users/:id',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res) => {
+    try {
+      if (req.params.id === req.authenticatedUser!.id) {
+        return res.status(400).json({
+          error: 'You cannot delete your own administrator account.'
+        });
+      }
+
+      await deleteUser(req.params.id);
+
+      logActivity(
+        'warn',
+        'UserRegistry',
+        `User deleted: ${req.params.id}`
+      );
+
+      return res.json({
+        success: true,
+        message: 'User deleted successfully.'
+      });
+    } catch (error) {
+      console.error('Delete user error:', error);
+
+      return res.status(500).json({
+        error: 'Failed to delete user.'
+      });
+    }
+  }
+);
+
+// --------------------------------------------------
+// ADMIN MONITORING
+// --------------------------------------------------
+
+app.get(
+  '/api/admin/activity-logs',
+  authenticate,
+  requireAdmin,
+  async (_req, res) => {
+    try {
+      const mongo = await getMongoStatus();
+      const engagement = await getEngagementStats();
+
+      return res.json({
+        success: true,
+        logs: systemActivityLogs,
+        telemetryStatus: {
+          eonetApi: 'ONLINE',
+          webAudioSynth: 'CALIBRATED',
+          database: mongo.connected ? 'OPERATIONAL' : 'OFFLINE',
+          activeUsers: mongo.userCount,
+          aiGuide: ai ? 'ONLINE' : 'STANDBY'
+        },
+        database: mongo,
+        engagement
+      });
+    } catch (error) {
+      console.error('Admin monitoring error:', error);
+
+      return res.status(500).json({
+        error: 'Unable to retrieve system status.'
+      });
+    }
+  }
+);
+
+// --------------------------------------------------
+// ANALYTICS
+// --------------------------------------------------
+
+app.post(
+  '/api/analytics/session',
+  authenticate,
+  async (req: AuthRequest, res) => {
+    try {
+      const {
+        datasetId,
+        datasetName,
+        listenSeconds,
+        probesCount,
+        activeScale
+      } = req.body;
+
+      if (
+        typeof datasetId !== 'string' ||
+        typeof datasetName !== 'string' ||
+        !Number.isFinite(listenSeconds) ||
+        !Number.isFinite(probesCount) ||
+        listenSeconds < 0 ||
+        probesCount < 0 ||
+        listenSeconds > 86400 ||
+        probesCount > 100000
+      ) {
+        return res.status(400).json({
+          error: 'Invalid analytics data.'
+        });
+      }
+
+      await recordSessionTelemetry({
+        id: crypto.randomUUID(),
+        userId: req.authenticatedUser!.id,
+        userName: req.authenticatedUser!.email,
+        datasetId,
+        datasetName,
+        listenSeconds,
+        probesCount,
+        activeScale:
+          typeof activeScale === 'string' ? activeScale : undefined,
+        timestamp: new Date().toISOString()
+      });
+
+      return res.json({
+        success: true,
+        message: 'Analytics session saved.'
+      });
+    } catch (error) {
+      console.error('Analytics error:', error);
+
+      return res.status(500).json({
+        error: 'Failed to save analytics session.'
+      });
+    }
+  }
+);
+
+// --------------------------------------------------
+// NASA EONET
+// --------------------------------------------------
+
+let cachedEvents: any[] = [];
+let cacheTimestamp = 0;
+
+const CACHE_TTL_MS = 90 * 1000;
+
+app.get('/api/nasa/current-events', async (_req, res) => {
   const now = Date.now();
-  if (cachedEvents && now - cachedEvents.timestamp < CACHE_TTL_MS) {
+
+  if (
+    cachedEvents.length &&
+    now - cacheTimestamp < CACHE_TTL_MS
+  ) {
     return res.json({
       success: true,
-      source: 'NASA Earth Observatory Natural Event Tracker (EONET v3)',
       cached: true,
-      lastUpdated: new Date(cachedEvents.timestamp).toISOString(),
-      count: cachedEvents.events.length,
-      events: cachedEvents.events,
+      lastUpdated: new Date(cacheTimestamp).toISOString(),
+      count: cachedEvents.length,
+      events: cachedEvents
     });
   }
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000); // 10s generous timeout
 
-    const eonetRes = await fetch('https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=30', {
-      signal: controller.signal,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'NASA-Space-Apps-Earth-Jukebox/2.0',
-      },
-    });
-    clearTimeout(timeout);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      10000
+    );
 
-    if (eonetRes.ok) {
-      const rawData = (await eonetRes.json()) as any;
-      const rawEvents: any[] = rawData.events || [];
+    try {
+      const response = await fetch(
+        'https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=30',
+        { signal: controller.signal }
+      );
 
-      if (rawEvents.length > 0) {
-        const parsedEvents = rawEvents.map((ev) => {
-          const categoryId = ev.categories?.[0]?.id || 'unknown';
-          const categoryTitle = ev.categories?.[0]?.title || 'Earth Observation';
-          const lastGeom = ev.geometry?.[ev.geometry.length - 1];
-          const lng = lastGeom?.coordinates?.[0] ?? 0;
-          const lat = lastGeom?.coordinates?.[1] ?? 0;
-          const magnitude = lastGeom?.magnitudeValue;
-          const magnitudeUnit = lastGeom?.magnitudeUnit || '';
-          const date = lastGeom?.date || new Date().toISOString();
-          const source = ev.sources?.[0];
-
-          // Dynamic sonification mapping based on NASA event category & physical magnitude
-          let sonificationFreqHz = 220;
-          let sonificationWave: OscillatorType = 'sine';
-          let acousticNote = 'A3 (Neutral Soundscape)';
-
-          if (categoryId === 'severeStorms') {
-            const kts = typeof magnitude === 'number' ? magnitude : 45;
-            sonificationFreqHz = Math.min(650, 180 + kts * 4.5);
-            sonificationWave = 'sawtooth';
-            acousticNote = `${Math.round(sonificationFreqHz)} Hz Wind Resonator (Velocity: ${kts} kts)`;
-          } else if (categoryId === 'wildfires') {
-            const acres = typeof magnitude === 'number' ? magnitude : 800;
-            sonificationFreqHz = Math.min(750, 320 + Math.log10(Math.max(10, acres)) * 80);
-            sonificationWave = 'square';
-            acousticNote = `${Math.round(sonificationFreqHz)} Hz Thermal Crackle (${Math.round(acres).toLocaleString()} acres)`;
-          } else if (categoryId === 'seaLakeIce') {
-            sonificationFreqHz = 85.0; // Deep sub-bass F2
-            sonificationWave = 'triangle';
-            acousticNote = '85 Hz Polar Ice Shelf Calving Tone';
-          } else if (categoryId === 'volcanoes') {
-            sonificationFreqHz = 130.8; // C3
-            sonificationWave = 'sawtooth';
-            acousticNote = '130 Hz Volcanic Seismic Pulse';
-          } else {
-            sonificationFreqHz = 261.63; // C4
-            sonificationWave = 'sine';
-            acousticNote = '261 Hz Ambient Earth Harmonic';
-          }
-
-          return {
-            id: ev.id,
-            title: ev.title,
-            category: categoryId,
-            categoryTitle,
-            date,
-            lat,
-            lng,
-            magnitude,
-            magnitudeUnit,
-            sourceUrl: source?.url || ev.link,
-            sourceName: source?.id || 'NASA EIC',
-            sonificationFreqHz: Math.round(sonificationFreqHz * 10) / 10,
-            sonificationWave,
-            acousticNote,
-          };
-        });
-
-        cachedEvents = {
-          timestamp: now,
-          events: parsedEvents,
-        };
-
-        return res.json({
-          success: true,
-          source: 'NASA Earth Observatory Natural Event Tracker (EONET v3)',
-          cached: false,
-          lastUpdated: new Date(now).toISOString(),
-          count: parsedEvents.length,
-          events: parsedEvents,
-        });
+      if (!response.ok) {
+        throw new Error(`NASA EONET returned ${response.status}`);
       }
-    }
-  } catch (err: any) {
-    console.warn('Live NASA EONET sync warning (using cached telemetry):', err?.message || err);
-  }
 
-  // Always return valid JSON and 200 HTTP status code with cached data
-  return res.json({
-    success: true,
-    source: 'NASA Earth Observatory Natural Event Tracker (EONET v3) [Active Telemetry]',
-    cached: true,
-    lastUpdated: new Date(cachedEvents.timestamp).toISOString(),
-    count: cachedEvents.events.length,
-    events: cachedEvents.events,
-  });
+      const data: any = await response.json();
+
+      cachedEvents = (data.events || []).map((ev: any) => {
+        const geometry = ev.geometry?.at(-1);
+        const category = ev.categories?.[0]?.id || 'unknown';
+
+        const magnitude = geometry?.magnitudeValue;
+        let frequency = 261.63;
+        let wave: OscillatorType = 'sine';
+
+        if (category === 'severeStorms') {
+          frequency = Math.min(
+            650,
+            180 + (
+              typeof magnitude === 'number' ? magnitude : 45
+            ) * 4.5
+          );
+          wave = 'sawtooth';
+        } else if (category === 'wildfires') {
+          frequency = Math.min(
+            750,
+            320 + Math.log10(Math.max(10, magnitude || 800)) * 80
+          );
+          wave = 'square';
+        } else if (category === 'seaLakeIce') {
+          frequency = 85;
+          wave = 'triangle';
+        } else if (category === 'volcanoes') {
+          frequency = 130.8;
+          wave = 'sawtooth';
+        }
+
+        return {
+          id: ev.id,
+          title: ev.title,
+          category,
+          categoryTitle:
+            ev.categories?.[0]?.title || 'Earth Observation',
+          date: geometry?.date || new Date().toISOString(),
+          lat: geometry?.coordinates?.[1] ?? 0,
+          lng: geometry?.coordinates?.[0] ?? 0,
+          magnitude,
+          magnitudeUnit: geometry?.magnitudeUnit || '',
+          sourceUrl: ev.sources?.[0]?.url || ev.link,
+          sourceName: ev.sources?.[0]?.id || 'NASA EIC',
+          sonificationFreqHz: Math.round(frequency * 10) / 10,
+          sonificationWave: wave,
+          acousticNote: `${Math.round(frequency)} Hz Earth Event Tone`
+        };
+      });
+
+      cacheTimestamp = Date.now();
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    return res.json({
+      success: true,
+      cached: false,
+      lastUpdated: new Date(cacheTimestamp).toISOString(),
+      count: cachedEvents.length,
+      events: cachedEvents
+    });
+  } catch (error) {
+    console.error('NASA EONET error:', error);
+
+    return res.json({
+      success: true,
+      cached: cachedEvents.length > 0,
+      lastUpdated: cacheTimestamp
+        ? new Date(cacheTimestamp).toISOString()
+        : null,
+      count: cachedEvents.length,
+      events: cachedEvents
+    });
+  }
 });
 
+// --------------------------------------------------
+// GEMINI CHAT
+// --------------------------------------------------
 
-// Initialize Google GenAI
-const apiKey = process.env.GEMINI_API_KEY || '';
-const ai = apiKey
-  ? new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    })
-  : null;
-
-// NASA Earth Information Center System Instruction
-const SYSTEM_INSTRUCTION = `You are "AeroSonic AI", the resident NASA Earth Information Center (EIC) audio-visual science guide and sonification specialist for the NASA Space Apps Challenge Earth Jukebox.
-
-Your mission:
-1. Translate complex Earth science datasets and satellite visual frames into intuitive acoustic, physical, and ecological concepts.
-2. Datasets you specialize in:
-   - Sea Surface Temperature (SST) & Thermal Anomalies (MODIS, VIIRS, GHRSST) -> Frequency sweeps, harmonic dissonance during El Niño warming events.
-   - Atmospheric Carbon Dioxide & Methane (OCO-2, AIRS) -> Keeling curve trajectory, atmospheric breathing pulses, harmonic density.
-   - Cryospheric Mass Balance & Polar Ice Extent (GRACE-FO, ICESat-2) -> Ice shelf calving crackles, descending sub-bass drops, thinning acoustic resonance.
-   - Global Wildfire Thermal Flux & Aerosol Optical Depth (VIIRS, MODIS) -> Rhythmic percussive sparks, high-frequency white-noise bursts.
-   - Biosphere Vegetation Index (NDVI) & Chlorophyll (Terra/Aqua MODIS) -> Lush polyphonic arpeggios, spring pulse bloom.
-   - Solar Wind Flux & Geomagnetic Aurora (DSCOVR, GOES) -> Ethereal celestial tones, ring modulator vibrations.
-   - Precipitation & Severe Storm Systems (GPM IMERG) -> Spatial white-noise rain texture, barometric pressure bass swells.
-3. For blind and visually impaired users: Provide vivid, descriptive sensory verbal imagery that coordinates with the soundscape (pitch height = latitude or intensity, tempo = kinetic rate, timbre = particulate or moisture).
-4. Tone: Inspiring, scientifically accurate, accessible, and passionate about NASA's open science and sensory inclusivity. Keep responses engaging and formatted with clear markdown bullets where helpful.`;
-
-// API endpoint for AI Chatbot
-app.post('/api/chat', async (req: Request, res: Response) => {
+app.post('/api/chat', async (req, res) => {
   try {
-    const { message, history, context } = req.body;
+    const { message, context } = req.body;
 
-    if (!message || typeof message !== 'string') {
-      return res.status(400).json({ error: 'Message is required.' });
+    if (
+      typeof message !== 'string' ||
+      !message.trim() ||
+      message.length > 10000
+    ) {
+      return res.status(400).json({
+        error: 'A valid message is required.'
+      });
     }
 
     if (!ai) {
       return res.json({
-        response: `Greetings from the NASA Earth Information Center (EIC) Sonification Lab! 🛰️ Earth Jukebox translates optical and radiometric Earth data into sound. In current dataset: ${context?.datasetName || 'Global Earth Science'}, ${context?.currentValue || 'multisensory indicators'} are mapped to fundamental acoustic frequencies (110Hz - 880Hz). How can I assist your exploration of planetary soundscapes today?`,
         simulated: true,
+        response:
+          `Welcome to Earth Jukebox! Your current dataset is ${
+            context?.datasetName || 'Global Earth Science'
+          }. I can explain how Earth observations can be transformed into sound.`
       });
     }
 
-    // Build contents with optional chat context and live NASA observations
-    let liveEventsSummary = '';
-    if (cachedEvents && cachedEvents.events.length > 0) {
-      liveEventsSummary = `[Active Live NASA EONET Satellite Stream (${new Date(cachedEvents.timestamp).toLocaleDateString()}): ` +
-        cachedEvents.events.slice(0, 5).map((e: any) => `${e.title} (${e.categoryTitle}, magnitude: ${e.magnitude || 'active'} ${e.magnitudeUnit || ''}, sonification pitch: ${e.sonificationFreqHz}Hz)`).join('; ') + ']';
-    }
-
-    let promptWithContext = message;
-    if (context) {
-      promptWithContext = `[Current EIC Jukebox State: Dataset: "${context.datasetName || 'Unknown'}", Frame/Year: "${context.year || '2026'}", Metric Value: "${context.currentValue || 'N/A'}", Active Scale: "${context.scale || 'Pentatonic'}", Region: "${context.region || 'Global'}"]\n${liveEventsSummary}\n\nUser Question: ${message}`;
-    } else if (liveEventsSummary) {
-      promptWithContext = `${liveEventsSummary}\n\nUser Question: ${message}`;
-    }
-
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: promptWithContext,
+      model: 'gemini-2.5-flash',
+      contents: JSON.stringify({
+        question: message,
+        context: context || {},
+        nasaEvents: cachedEvents.slice(0, 5)
+      }),
       config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-      },
+        systemInstruction: SYSTEM_INSTRUCTION
+      }
     });
 
-    const reply = response.text || "I was unable to generate a response from NASA Earth science records.";
-    return res.json({ response: reply });
-  } catch (err: any) {
-    console.error('Gemini API Error:', err?.message || err);
-    const liveSample = cachedEvents?.events?.slice(0, 4) || [];
-    const eventBullets = liveSample.length > 0
-      ? liveSample.map((e: any) => `• **${e.title}** (${e.categoryTitle}): ${e.acousticNote} — Sonified at **${e.sonificationFreqHz} Hz** (${e.sonificationWave} wave).`).join('\n')
-      : '• **Global Earth Observations**: NASA EONET v3 stream active across all continental and oceanic sectors.';
-
     return res.json({
-      response: `🛰️ **NASA Earth Information Center (EIC) Live Telemetry Report**:\n\nNASA satellites are actively monitoring open planetary anomalies today. Current real-time observations translated into acoustic signatures:\n\n${eventBullets}\n\n*Acoustic Rule*: Atmospheric pressure gradients and cyclone wind velocities scale pitch upwards (180 Hz – 650 Hz), while polar cryosphere calving generates resonant sub-bass drops (85 Hz).`,
-      simulated: true,
+      response:
+        response.text ||
+        'Unable to generate an AI response.'
+    });
+  } catch (error) {
+    console.error('Gemini error:', error);
+
+    return res.status(500).json({
+      error: 'AI service is temporarily unavailable.'
     });
   }
 });
 
-// Health check endpoint
-app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({
+// --------------------------------------------------
+// HEALTH CHECK
+// --------------------------------------------------
+
+app.get('/api/health', async (_req, res) => {
+  const mongo = await getMongoStatus().catch(() => null);
+
+  return res.json({
     status: 'healthy',
-    system: 'NASA Earth Jukebox - EIC Sonification Lab',
+    system: 'Earth Jukebox - EIC Sonification Lab',
     timestamp: new Date().toISOString(),
     aiReady: Boolean(ai),
+    databaseConnected: mongo?.connected || false
   });
 });
 
-async function startServer() {
-  const isProduction = process.env.NODE_ENV === 'production';
+// --------------------------------------------------
+// FRONTEND AND SERVER STARTUP
+// --------------------------------------------------
 
-  if (!isProduction) {
+async function startServer(): Promise<void> {
+  if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
+      server: {
+        middlewareMode: true
+      },
+      appType: 'spa'
     });
+
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(process.cwd(), 'dist');
+
     app.use(express.static(distPath));
-    app.get('*', (_req: Request, res: Response) => {
+
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 NASA Earth Jukebox server active on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0');
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+
+  console.log(`Earth Jukebox listening at http://127.0.0.1:${PORT}`);
+
+  server.on('error', (error) => {
+    console.error('Server error:', error);
+  });
+
+  server.on('close', () => {
+    console.log('Earth Jukebox server stopped.');
   });
 }
 
-startServer().catch((err) => {
-  console.error('Fatal error starting Earth Jukebox server:', err);
+// Export Express app
+export default app;
+
+// Start the server locally
+startServer().catch((error) => {
+  console.error('Server startup failed:', error);
+  process.exit(1);
 });
