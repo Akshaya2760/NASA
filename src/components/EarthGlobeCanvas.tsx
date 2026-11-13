@@ -557,40 +557,40 @@ export const EarthGlobeCanvas: React.FC<EarthGlobeCanvasProps> = ({
   const handleMouseUp = () => setIsDragging(false);
 
   return (
-    <div className="relative w-full h-full min-h-[440px] rounded-2xl overflow-hidden bg-[#101F35] border border-[#00D4FF]/20 flex flex-col justify-between select-none glass-panel shadow-2xl">
-      {/* Top Overlay Header */}
-      <div className="absolute top-4 left-4 right-4 z-10 flex items-center justify-between pointer-events-none">
-        <div className="flex items-center gap-2 pointer-events-auto">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-[#0A1628]/90 border border-[#00D4FF]/30 text-[#00D4FF] backdrop-blur-md rounded-xl shadow-lg">
-            <span className="w-2 h-2 rounded-full bg-[#00D4FF] animate-pulse"></span>
-            <span className="font-mono text-[10px] font-bold tracking-wider uppercase">Interactive Earth Radiometric Viewport</span>
-          </div>
-          <span className="px-2.5 py-1.5 text-[10px] font-mono bg-[#050B18]/90 border border-[#00D4FF]/20 text-[#EAF4FF] backdrop-blur-md rounded-xl uppercase tracking-wide">
+    <div className="relative w-full h-full min-h-[480px] lg:min-h-[540px] rounded-xl overflow-hidden bg-[#070D19] border border-[#1B2B44] flex flex-col justify-between select-none">
+      {/* Clean Minimalist Top Bar Overlay */}
+      <div className="absolute top-3.5 left-4 right-4 z-10 flex items-center justify-between pointer-events-none">
+        {/* Quiet unboxed sensor label */}
+        <div className="flex flex-col pointer-events-auto">
+          <span className="text-xs font-semibold text-white tracking-tight">
             {dataset.missionSensor}
+          </span>
+          <span className="text-[11px] font-mono text-[#9BB0C9]">
+            Click surface to probe coordinate pitch
           </span>
         </div>
 
-        {/* View Controls Toolbar */}
-        <div className="flex items-center gap-1 p-1 bg-[#0A1628]/90 border border-[#00D4FF]/25 backdrop-blur-md pointer-events-auto shadow-xl rounded-xl">
+        {/* Compact Single-Strip View Controls */}
+        <div className="flex items-center gap-1 p-1 bg-[#0A1628]/90 border border-[#1B2B44] pointer-events-auto rounded-lg">
           {liveEvents.length > 0 && (
             <button
               onClick={() => setShowLiveStream(!showLiveStream)}
-              className={`flex items-center gap-1.5 px-2 py-1 text-[10px] font-mono rounded-lg transition cursor-pointer border ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono rounded-md transition-colors cursor-pointer ${
                 showLiveStream
-                  ? 'bg-rose-950/80 border-rose-500/60 text-rose-300 shadow-[0_0_10px_rgba(244,63,94,0.3)]'
-                  : 'bg-[#101F35] border-[#00D4FF]/20 text-[#9BB0C9] hover:text-[#EAF4FF]'
+                  ? 'bg-rose-950/80 text-rose-300 border border-rose-500/40'
+                  : 'text-[#9BB0C9] hover:text-white'
               }`}
-              title="Toggle live NASA EONET satellite observation stream"
+              title="Toggle live NASA EONET event markers on globe"
             >
-              <Radio className={`w-3 h-3 ${showLiveStream ? 'animate-pulse text-rose-400' : ''}`} />
-              <span className="hidden sm:inline">Live Events</span>
-              <span className="font-bold text-white">({liveEvents.length})</span>
+              <Radio className="w-3 h-3" />
+              <span className="hidden sm:inline">Events</span>
+              <span className="tabular-nums font-semibold">({liveEvents.length})</span>
             </button>
           )}
 
           <button
             onClick={() => setViewMode(viewMode === '3d' ? '2d' : '3d')}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono uppercase rounded-lg text-[#9BB0C9] hover:text-white hover:bg-[#287BFF]/20 transition cursor-pointer"
+            className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono rounded-md text-[#EAF4FF] hover:bg-[#101F35] transition-colors cursor-pointer"
             title="Toggle 3D Sphere vs 2D Projection"
           >
             {viewMode === '3d' ? <Globe className="w-3.5 h-3.5 text-[#00D4FF]" /> : <Map className="w-3.5 h-3.5 text-[#00D4FF]" />}
@@ -600,18 +600,18 @@ export const EarthGlobeCanvas: React.FC<EarthGlobeCanvasProps> = ({
           {viewMode === '3d' && (
             <button
               onClick={() => setIsRotating(!isRotating)}
-              className={`p-1.5 rounded-lg transition cursor-pointer ${
-                isRotating ? 'text-[#050B18] bg-[#00D4FF] font-bold shadow-sm' : 'text-[#9BB0C9] hover:text-[#EAF4FF] hover:bg-[#101F35]'
+              className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+                isRotating ? 'text-[#050B18] bg-[#00D4FF]' : 'text-[#9BB0C9] hover:text-white hover:bg-[#101F35]'
               }`}
               title={isRotating ? 'Pause Orbit' : 'Resume Auto-Rotate'}
             >
-              <RotateCw className={`w-3.5 h-3.5 ${isRotating ? 'animate-spin' : ''}`} />
+              <RotateCw className="w-3.5 h-3.5" />
             </button>
           )}
 
           <button
             onClick={() => setZoomLevel((z) => Math.min(1.6, z + 0.15))}
-            className="p-1.5 rounded-lg text-[#9BB0C9] hover:text-[#00D4FF] hover:bg-[#101F35] transition cursor-pointer"
+            className="p-1.5 rounded-md text-[#9BB0C9] hover:text-white hover:bg-[#101F35] transition-colors cursor-pointer"
             title="Zoom In"
           >
             <ZoomIn className="w-3.5 h-3.5" />
@@ -619,7 +619,7 @@ export const EarthGlobeCanvas: React.FC<EarthGlobeCanvasProps> = ({
 
           <button
             onClick={() => setZoomLevel((z) => Math.max(0.7, z - 0.15))}
-            className="p-1.5 rounded-lg text-[#9BB0C9] hover:text-[#00D4FF] hover:bg-[#101F35] transition cursor-pointer"
+            className="p-1.5 rounded-md text-[#9BB0C9] hover:text-white hover:bg-[#101F35] transition-colors cursor-pointer"
             title="Zoom Out"
           >
             <ZoomOut className="w-3.5 h-3.5" />
@@ -631,7 +631,7 @@ export const EarthGlobeCanvas: React.FC<EarthGlobeCanvasProps> = ({
               setTiltAngle(0.25);
               setZoomLevel(1.0);
             }}
-            className="p-1.5 rounded-lg text-[#9BB0C9] hover:text-[#00D4FF] hover:bg-[#101F35] transition cursor-pointer"
+            className="p-1.5 rounded-md text-[#9BB0C9] hover:text-white hover:bg-[#101F35] transition-colors cursor-pointer"
             title="Reset Orientation"
           >
             <Compass className="w-3.5 h-3.5" />
@@ -654,25 +654,21 @@ export const EarthGlobeCanvas: React.FC<EarthGlobeCanvasProps> = ({
       {probePing && (
         <div
           style={{ left: probePing.x, top: probePing.y }}
-          className="absolute z-20 -translate-x-1/2 -translate-y-12 pointer-events-none px-3 py-1.5 rounded-lg bg-[#050B18]/95 border border-[#00D4FF] text-[#EAF4FF] text-xs font-mono shadow-[0_0_20px_rgba(0,212,255,0.4)] backdrop-blur-md flex items-center gap-1.5"
+          className="absolute z-20 -translate-x-1/2 -translate-y-12 pointer-events-none px-3 py-1.5 rounded-md bg-[#050B18]/95 border border-[#00D4FF]/60 text-[#EAF4FF] text-xs font-mono flex items-center gap-1.5"
         >
-          <Volume2 className="w-3.5 h-3.5 text-[#00D4FF] animate-pulse" />
-          <span>[COORDINATE PROBE] {probePing.label}</span>
+          <Volume2 className="w-3.5 h-3.5 text-[#00D4FF]" />
+          <span>{probePing.label}</span>
         </div>
       )}
 
-      {/* Bottom Info Bar & Telemetry Coordinates */}
-      <div className="absolute bottom-4 left-4 right-4 z-10 flex items-center justify-between pointer-events-none text-xs text-[#9BB0C9]">
-        <div className="flex items-center gap-2 pointer-events-auto bg-[#0A1628]/90 px-3 py-1.5 rounded-xl border border-[#00D4FF]/25 backdrop-blur-md shadow-lg">
-          <span className="w-2 h-2 rounded-full bg-[#00D4FF]"></span>
-          <span className="font-mono text-[10px] text-[#EAF4FF]">
-            Click surface to probe coordinate anomaly · Orbital Azimuth Panning: {spatialPanningEnabled ? 'Active' : 'Bypass'}
-          </span>
-        </div>
-
-        <div className="pointer-events-auto bg-[#0A1628]/90 px-3 py-1.5 rounded-xl border border-[#00D4FF]/25 font-mono text-[10px] text-[#00D4FF] tabular-nums shadow-lg">
-          LON: {rotationAngle.toFixed(1)}°E · LAT: {(-tiltAngle * 57.3).toFixed(1)}°N · ZOOM: {(zoomLevel * 100).toFixed(0)}%
-        </div>
+      {/* Clean Quiet Bottom Telemetry Readout */}
+      <div className="absolute bottom-3.5 left-4 right-4 z-10 flex items-center justify-between pointer-events-none text-[11px] font-mono text-[#9BB0C9]">
+        <span>
+          Spatial Pan: {spatialPanningEnabled ? 'Active' : 'Bypass'}
+        </span>
+        <span className="text-[#EAF4FF] tabular-nums">
+          LON {rotationAngle.toFixed(1)}°E · LAT {(-tiltAngle * 57.3).toFixed(1)}°N · ZOOM {(zoomLevel * 100).toFixed(0)}%
+        </span>
       </div>
     </div>
   );

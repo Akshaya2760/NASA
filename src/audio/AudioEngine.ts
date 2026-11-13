@@ -381,6 +381,109 @@ export class AudioEngine {
   public getCurrentFrequency(): number {
     return this.currentFrequency;
   }
+
+  /**
+   * Plays a gentle ascending space-science entrance chord when entering the app or dashboard
+   */
+  public async playEntranceChime(variant: 'portal' | 'dashboard' = 'portal'): Promise<void> {
+    try {
+      await this.init();
+      if (!this.ctx || !this.masterGain) return;
+      if (this.ctx.state === 'suspended') {
+        await this.ctx.resume();
+      }
+
+      const now = this.ctx.currentTime;
+      const notes =
+        variant === 'dashboard'
+          ? [146.83, 220.0, 293.66, 369.99, 440.0] // D major / open 5th radiant arrival
+          : [130.81, 196.0, 261.63, 329.63]; // C major harmonic space arrival
+
+      notes.forEach((freq, idx) => {
+        if (!this.ctx || !this.masterGain) return;
+        const start = now + idx * 0.09;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        const filter = this.ctx.createBiquadFilter();
+
+        osc.type = idx === 0 ? 'triangle' : 'sine';
+        osc.frequency.setValueAtTime(freq, start);
+
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(1400, start);
+
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(0.11 / (idx * 0.25 + 1), start + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.35);
+
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.masterGain);
+
+        osc.start(start);
+        osc.stop(start + 1.45);
+      });
+    } catch {
+      // Ignore if AudioContext is blocked prior to user gesture
+    }
+  }
+
+  /**
+   * Subtle acoustic feedback chime while typing text into portal inputs
+   */
+  public playKeystrokeTone(seedIndex: number = 0): void {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+
+      if (!this.ctx) {
+        this.ctx = new AudioCtx();
+      }
+      if (this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+      if (this.ctx.state !== 'running') return;
+
+      const scale = [392.0, 440.0, 493.88, 587.33, 659.25, 783.99];
+      const freq = scale[Math.abs(seedIndex) % scale.length];
+
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.035, now + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.065);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.075);
+    } catch {
+      // Fail silently on restricted environments
+    }
+  }
+
+  /**
+   * Speaks a clear, calm welcome greeting using Web Speech API
+   */
+  public speakWelcomeMessage(text: string): void {
+    try {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.98;
+      utterance.pitch = 1.0;
+      utterance.volume = 0.85;
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      // Ignore speech synthesis errors
+    }
+  }
 }
 
 // Global Singleton Instance

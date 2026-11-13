@@ -10,8 +10,6 @@ import {
   CloudRain,
   Zap,
   Activity,
-  Layers,
-  Filter,
   Radio,
   RefreshCw,
 } from 'lucide-react';
@@ -50,7 +48,6 @@ export const DatasetSelectorBar: React.FC<DatasetSelectorBarProps> = ({
 }) => {
   const [activeCategory, setActiveCategory] = useState<string>('ALL');
 
-  // Extract unique categories
   const categories = ['ALL', 'Atmosphere', 'Ocean', 'Cryosphere', 'Biosphere', 'Heliophysics'];
 
   const filteredDatasets =
@@ -64,22 +61,17 @@ export const DatasetSelectorBar: React.FC<DatasetSelectorBarProps> = ({
 
   return (
     <div className="w-full flex flex-col gap-3 select-none">
-      {/* Category Filter Tabs & Telemetry Header */}
+      {/* Category Filter & Live NASA Feed Status */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-        {/* Left: Category Filter Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 no-scrollbar">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-[#9BB0C9] flex items-center gap-1 mr-1">
-            <Filter className="w-3 h-3 text-[#00D4FF]" />
-            <span>Category:</span>
-          </span>
+        <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0 no-scrollbar">
           {categories.map((cat) => (
             <button
               key={cat}
               onClick={() => setActiveCategory(cat)}
-              className={`px-3 py-1 rounded-lg text-[11px] font-mono uppercase tracking-wider transition-all duration-200 cursor-pointer shrink-0 ${
+              className={`px-3 py-1 rounded-md text-[11px] font-mono uppercase tracking-wider transition-colors cursor-pointer shrink-0 border ${
                 activeCategory === cat
-                  ? 'bg-[#00D4FF] text-[#050B18] font-bold shadow-[0_0_12px_rgba(0,212,255,0.35)]'
-                  : 'bg-[#101F35] text-[#9BB0C9] hover:text-[#EAF4FF] hover:bg-[#101F35]/80 border border-[#00D4FF]/10'
+                  ? 'bg-[#101F35] text-[#00D4FF] border-[#00D4FF]/50 font-semibold'
+                  : 'bg-transparent text-[#9BB0C9] hover:text-[#EAF4FF] border-transparent hover:border-[#1B2B44]'
               }`}
             >
               {cat}
@@ -87,33 +79,28 @@ export const DatasetSelectorBar: React.FC<DatasetSelectorBarProps> = ({
           ))}
         </div>
 
-        {/* Right: Operational Feeds Counter & Live Sync Button */}
-        <div className="flex items-center gap-2 font-mono text-[11px]">
+        <div className="flex items-center gap-3 font-mono text-[11px] text-[#9BB0C9]">
+          <span className="tabular-nums">
+            <strong className="text-[#EAF4FF] font-semibold">{liveEventCount}</strong> live NASA EONET events
+            <span className="hidden md:inline text-[#9BB0C9]/70"> · {lastUpdatedText}</span>
+          </span>
+
           {onRefreshLiveFeed && (
             <button
               onClick={onRefreshLiveFeed}
               disabled={isFetchingLiveFeed}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#101F35] hover:bg-[#00D4FF]/20 border border-[#00D4FF]/30 text-[#00D4FF] transition-all cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#0A1628] hover:bg-[#101F35] border border-[#1B2B44] hover:border-[#00D4FF]/40 text-[#EAF4FF] transition-colors cursor-pointer disabled:opacity-50"
               title="Query NASA EONET v3 for latest satellite events"
             >
-              <RefreshCw className={`w-3 h-3 ${isFetchingLiveFeed ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">Sync Live NASA Data</span>
-              <span className="sm:hidden">Sync</span>
+              <RefreshCw className={`w-3 h-3 text-[#00D4FF] ${isFetchingLiveFeed ? 'animate-spin' : ''}`} />
+              <span>Sync NASA Feed</span>
             </button>
           )}
-
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0A1628] border border-[#00D4FF]/15 text-[#9BB0C9]">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-[#EAF4FF] font-semibold">{liveEventCount}</span>
-            <span>Live Events</span>
-            <span className="text-[#9BB0C9]/40 hidden md:inline">·</span>
-            <span className="text-[10px] text-[#00D4FF] hidden md:inline">{lastUpdatedText}</span>
-          </div>
         </div>
       </div>
 
-      {/* Dataset Cards Carousel / Grid */}
-      <div className="flex gap-2.5 overflow-x-auto pb-1.5 no-scrollbar">
+      {/* Observation Channel Selector */}
+      <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
         {filteredDatasets.map((d) => {
           const isSelected = d.id === selectedDatasetId;
           const isLiveEonet = d.id === 'nasa-live-eonet';
@@ -124,43 +111,41 @@ export const DatasetSelectorBar: React.FC<DatasetSelectorBarProps> = ({
             <button
               key={d.id}
               onClick={() => onSelectDataset(d.id)}
-              className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl border transition-all duration-200 shrink-0 text-left cursor-pointer relative overflow-hidden ${
+              className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl border transition-colors shrink-0 text-left cursor-pointer ${
                 isSelected
-                  ? 'bg-[#101F35] border-[#00D4FF] text-[#EAF4FF] shadow-[0_0_18px_rgba(0,212,255,0.25)]'
-                  : 'bg-[#0A1628]/90 border-[#00D4FF]/15 text-[#9BB0C9] hover:text-[#EAF4FF] hover:bg-[#101F35] hover:border-[#00D4FF]/40'
+                  ? 'bg-[#101F35] border-[#00D4FF]/70 text-[#EAF4FF]'
+                  : 'bg-[#0A1628] border-[#1B2B44] text-[#9BB0C9] hover:text-[#EAF4FF] hover:border-[#2A4268]'
               }`}
             >
-              {isLiveEonet && (
-                <div className="absolute top-0 right-0 bg-gradient-to-l from-rose-500/80 to-transparent px-2 py-0.5 rounded-bl-lg font-mono text-[8px] font-bold tracking-widest text-white uppercase flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
-                  <span>CURRENT LIVE</span>
-                </div>
-              )}
-
               <div
-                className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-all ${
+                className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border ${
                   isSelected
-                    ? 'bg-[#00D4FF] text-[#050B18] shadow-sm font-bold'
+                    ? 'bg-[#00D4FF]/15 text-[#00D4FF] border-[#00D4FF]/40'
                     : isLiveEonet
-                    ? 'bg-rose-950/60 text-rose-300 border border-rose-500/40'
-                    : 'bg-[#050B18] text-[#00D4FF] border border-[#00D4FF]/25'
+                    ? 'bg-rose-950/40 text-rose-300 border-rose-500/30'
+                    : 'bg-[#050B18] text-[#9BB0C9] border-[#1B2B44]'
                 }`}
               >
                 <IconComponent className="w-4 h-4" />
               </div>
 
-              <div className="flex flex-col min-w-[145px]">
-                <div className="flex items-center justify-between gap-1">
-                  <span className="text-xs font-bold line-clamp-1 text-[#EAF4FF]">
-                    {d.title.split('&')[0].replace('(EONET Current)', '')}
+              <div className="flex flex-col min-w-[148px]">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold line-clamp-1 text-[#EAF4FF]">
+                    {d.title.split('&')[0].replace('(EONET Current)', '').trim()}
                   </span>
+                  {isLiveEonet && (
+                    <span className="text-[9px] font-mono font-semibold text-rose-300 uppercase tracking-wider shrink-0">
+                      LIVE
+                    </span>
+                  )}
                 </div>
-                <div className="flex items-center gap-1.5 mt-0.5 text-[10px] font-mono text-[#9BB0C9]">
-                  <span className={`${isLiveEonet ? 'text-rose-300' : 'text-[#00D4FF]'} font-semibold tabular-nums`}>
-                    {isLiveEonet ? 'Live Feed' : `${latestFrame?.globalAvg} ${d.unit.split(' ')[0]}`}
+                <div className="flex items-center gap-1.5 mt-0.5 text-[11px] font-mono text-[#9BB0C9] tabular-nums">
+                  <span className={isLiveEonet ? 'text-rose-300' : 'text-[#00D4FF]'}>
+                    {isLiveEonet ? 'EONET v3' : `${latestFrame?.globalAvg} ${d.unit.split(' ')[0]}`}
                   </span>
-                  <span>·</span>
-                  <span className="text-[#9BB0C9]/80 uppercase">{d.category}</span>
+                  <span className="text-[#9BB0C9]/40">·</span>
+                  <span>{d.category}</span>
                 </div>
               </div>
             </button>
@@ -170,4 +155,3 @@ export const DatasetSelectorBar: React.FC<DatasetSelectorBarProps> = ({
     </div>
   );
 };
-

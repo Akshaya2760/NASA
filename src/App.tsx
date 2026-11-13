@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { EICDataset, DatasetFrame, User, SonificationAudioState, Hotspot, LiveNasaEvent } from './types';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { EICDataset, DatasetFrame, User, SonificationAudioState, Hotspot, LiveNasaEvent, MusicalScale } from './types';
 import { INITIAL_DATASETS } from './data/datasets';
 import { audioEngine } from './audio/AudioEngine';
 import { CinematicOpening } from './components/CinematicOpening';
@@ -9,32 +9,29 @@ import { AudioVisualizer } from './components/AudioVisualizer';
 import { JukeboxPlayerControls } from './components/JukeboxPlayerControls';
 import { SonificationSynthesizerPanel } from './components/SonificationSynthesizerPanel';
 import { DatasetSelectorBar } from './components/DatasetSelectorBar';
+import { MissionStagesBar, MissionStageId } from './components/MissionStagesBar';
 import { AeroSonicChatbot } from './components/AeroSonicChatbot';
 import { AuthModal } from './components/AuthModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import { AccessibilityToolbar } from './components/AccessibilityToolbar';
 import { HowItWorksModal } from './components/HowItWorksModal';
+import { SessionShareModal } from './components/SessionShareModal';
 import {
-  Globe2,
   Bot,
   Shield,
-  User as UserIcon,
-  Radio,
-  ExternalLink,
   Volume2,
-  Layers,
   MapPin,
   HelpCircle,
   Database,
   Film,
-  Sparkles,
-  RefreshCw,
+  Share2,
+  Radio,
 } from 'lucide-react';
 
 type AppStage = 'cinematic' | 'register' | 'dashboard';
+type InspectorTab = 'overview' | 'data' | 'synth';
 
 export default function App() {
-  // Datasets & Playback State - with automated merging of new NASA live stream channels
   const [datasets, setDatasets] = useState<EICDataset[]>(() => {
     const saved = localStorage.getItem('nasa_eic_custom_datasets');
     if (saved) {
@@ -42,16 +39,38 @@ export default function App() {
         const parsed: EICDataset[] = JSON.parse(saved);
         const missing = INITIAL_DATASETS.filter((init) => !parsed.some((p) => p.id === init.id));
         return [...missing, ...parsed];
-      } catch (e) {
+      } catch {
         return INITIAL_DATASETS;
       }
     }
     return INITIAL_DATASETS;
   });
 
-  const [selectedDatasetId, setSelectedDatasetId] = useState<string>(INITIAL_DATASETS[0].id);
-  const [currentFrameIndex, setCurrentFrameIndex] = useState<number>(0);
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const dsParam = new URLSearchParams(window.location.search).get('ds');
+      if (dsParam && INITIAL_DATASETS.some((d) => d.id === dsParam)) {
+        return dsParam;
+      }
+    }
+    return INITIAL_DATASETS[0].id;
+  });
+
+  const [currentFrameIndex, setCurrentFrameIndex] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const yrParam = parseInt(new URLSearchParams(window.location.search).get('yr') || '', 10);
+      if (!isNaN(yrParam) && yrParam >= 0) return yrParam;
+    }
+    return 0;
+  });
+
   const [selectedHotspot, setSelectedHotspot] = useState<Hotspot | null>(null);
+
+  // Mission Stage & Right Inspector Tab
+  const [activeStage, setActiveStage] = useState<MissionStageId>(2);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('overview');
+  const datasetBarRef = useRef<HTMLDivElement | null>(null);
+  const playerControlsRef = useRef<HTMLDivElement | null>(null);
 
   // Live NASA Satellite Telemetry Stream (EONET v3)
   const [liveNasaEvents, setLiveNasaEvents] = useState<LiveNasaEvent[]>([]);
@@ -62,37 +81,24 @@ export default function App() {
     setIsFetchingLiveEvents(true);
     try {
       const res = await fetch('/api/nasa/current-events');
-      if (!res.ok) {
-        console.warn(`NASA telemetry API returned status ${res.status}`);
-        return;
-      }
+      if (!res.ok) return;
       const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        console.warn('Expected JSON response from /api/nasa/current-events, received:', contentType);
-        return;
-      }
+      if (!contentType.includes('application/json')) return;
       const text = await res.text();
-      let data: any;
-      try {
-        data = JSON.parse(text);
-      } catch (parseErr) {
-        console.warn('Could not parse NASA EONET response as JSON:', parseErr);
-        return;
-      }
+      const data = JSON.parse(text);
       if (data && data.events && Array.isArray(data.events)) {
         setLiveNasaEvents(data.events);
         setLastLiveSyncTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 
-        // Dynamically update the 'nasa-live-eonet' dataset with latest open satellite events
-        setDatasets((prevDatasets) => {
-          return prevDatasets.map((ds) => {
+        setDatasets((prevDatasets) =>
+          prevDatasets.map((ds) => {
             if (ds.id === 'nasa-live-eonet') {
               const liveHotspots: Hotspot[] = data.events.slice(0, 8).map((ev: LiveNasaEvent) => ({
                 name: ev.title,
                 lat: ev.lat,
                 lng: ev.lng,
                 value: ev.magnitude || Math.round(ev.sonificationFreqHz),
-                note: `${ev.categoryTitle}: ${ev.acousticNote} (Source: ${ev.sourceName})`,
+                note: `${ev.categoryTitle}: ${ev.acousticNote} (${ev.sourceName})`,
               }));
 
               const updatedFrames = [...ds.frames];
@@ -102,43 +108,46 @@ export default function App() {
                   label: `Live Stream (${new Date().toLocaleDateString()})`,
                   date: `${new Date().toISOString().split('T')[0]} (Live)`,
                   hotspots: liveHotspots,
-                  scientificSummary: `Direct near-real-time satellite stream from NASA EONET v3. Actively monitoring ${data.count || data.events.length} open natural events with optical, infrared, and radar sensors.`,
+                  scientificSummary: `Near-real-time satellite stream from NASA EONET v3 monitoring ${data.count || data.events.length} active natural events.`,
                 };
               }
               return { ...ds, frames: updatedFrames };
             }
             return ds;
-          });
-        });
+          })
+        );
       }
     } catch (err) {
-      console.warn('NASA live data stream warning (gracefully recovered):', err);
+      console.warn('NASA live data stream warning:', err);
     } finally {
       setIsFetchingLiveEvents(false);
     }
   }, []);
 
-  // Poll live NASA EONET data stream
   useEffect(() => {
     fetchLiveNasaEvents();
-    const interval = setInterval(fetchLiveNasaEvents, 120000); // 2 minutes
+    const interval = setInterval(fetchLiveNasaEvents, 120000);
     return () => clearInterval(interval);
   }, [fetchLiveNasaEvents]);
 
   // Audio Synthesis State
-  const [audioState, setAudioState] = useState<SonificationAudioState>({
-    isPlaying: false,
-    isMuted: false,
-    volume: 0.75,
-    tempoSpeed: 1,
-    layerDrone: true,
-    layerLead: true,
-    layerPulse: true,
-    layerAtmosphere: true,
-    activeScale: INITIAL_DATASETS[0].sonificationConfig.scale,
-    baseKey: 'D',
-    isRecording: false,
-    spatialMode: 'orbit',
+  const [audioState, setAudioState] = useState<SonificationAudioState>(() => {
+    const scParam = typeof window !== 'undefined' ? (new URLSearchParams(window.location.search).get('sc') as MusicalScale | null) : null;
+    const validScales: MusicalScale[] = ['voyager', 'dorian', 'lydian', 'minor', 'pentatonic'];
+    return {
+      isPlaying: false,
+      isMuted: false,
+      volume: 0.75,
+      tempoSpeed: 1,
+      layerDrone: true,
+      layerLead: true,
+      layerPulse: true,
+      layerAtmosphere: true,
+      activeScale: scParam && validScales.includes(scParam) ? scParam : INITIAL_DATASETS[0].sonificationConfig.scale,
+      baseKey: 'D',
+      isRecording: false,
+      spatialMode: 'orbit',
+    };
   });
 
   // User Auth State
@@ -147,43 +156,41 @@ export default function App() {
     if (savedUser) {
       try {
         return JSON.parse(savedUser);
-      } catch (e) {
+      } catch {
         return null;
       }
     }
     return null;
   });
 
-  // Primary App Journey Stage: 'cinematic' -> 'register' -> 'dashboard'
+  // Primary App Journey Stage
   const [appStage, setAppStage] = useState<AppStage>('cinematic');
 
-  // UI Modal & Drawer States
+  // Modals
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isHowItWorksOpen, setIsHowItWorksOpen] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
 
-  // Accessibility States
+  // Accessibility
   const [highContrast, setHighContrast] = useState(false);
   const [screenReaderSpeech, setScreenReaderSpeech] = useState(false);
 
-  // Real-Time Engagement Analytics Tracking
+  // Analytics
   const [sessionDurationSec, setSessionDurationSec] = useState<number>(0);
   const [liveListenSeconds, setLiveListenSeconds] = useState<Record<string, number>>({});
   const [liveProbeCount, setLiveProbeCount] = useState<number>(0);
-  const [liveRecordingCount, setLiveRecordingCount] = useState<number>(0);
+  const [liveRecordingCount] = useState<number>(0);
 
-  // Currently active dataset & frame
   const currentDataset = datasets.find((d) => d.id === selectedDatasetId) || datasets[0];
-  const currentFrame = currentDataset.frames[currentFrameIndex] || currentDataset.frames[0];
+  const safeFrameIdx = Math.min(currentFrameIndex, Math.max(0, currentDataset.frames.length - 1));
+  const currentFrame = currentDataset.frames[safeFrameIdx] || currentDataset.frames[0];
 
-  // Active Session Duration Timer & Live Listening Accumulator
   useEffect(() => {
     if (appStage !== 'dashboard') return;
-
     const timer = setInterval(() => {
       setSessionDurationSec((prev) => prev + 1);
-
       if (audioState.isPlaying && !audioState.isMuted) {
         setLiveListenSeconds((prev) => ({
           ...prev,
@@ -191,21 +198,19 @@ export default function App() {
         }));
       }
     }, 1000);
-
     return () => clearInterval(timer);
   }, [audioState.isPlaying, audioState.isMuted, selectedDatasetId, appStage]);
 
-  // Save updated datasets to localStorage
   const handleUpdateDatasets = (newDatasets: EICDataset[]) => {
     setDatasets(newDatasets);
     localStorage.setItem('nasa_eic_custom_datasets', JSON.stringify(newDatasets));
   };
 
-  // Login & Logout Handlers
   const handleLogin = (user: User) => {
     setCurrentUser(user);
     localStorage.setItem('nasa_eic_user', JSON.stringify(user));
     setAppStage('dashboard');
+    audioEngine.playEntranceChime('dashboard');
   };
 
   const handleLogout = () => {
@@ -217,7 +222,6 @@ export default function App() {
     setAppStage('cinematic');
   };
 
-  // Partial audio state updater
   const handleUpdateAudioState = (partial: Partial<SonificationAudioState>) => {
     setAudioState((prev) => {
       const next = { ...prev, ...partial };
@@ -226,7 +230,6 @@ export default function App() {
     });
   };
 
-  // Sync sound engine whenever frame or dataset changes
   const syncAudioWithFrame = useCallback(
     (frame: DatasetFrame, ds: EICDataset) => {
       if (audioState.isPlaying) {
@@ -251,7 +254,6 @@ export default function App() {
     [audioState, screenReaderSpeech]
   );
 
-  // Handle dataset switch
   const handleSelectDataset = (id: string) => {
     const ds = datasets.find((d) => d.id === id);
     if (!ds) return;
@@ -262,7 +264,6 @@ export default function App() {
     syncAudioWithFrame(ds.frames[0], ds);
   };
 
-  // Handle frame switch
   const handleSelectFrameIndex = (idx: number) => {
     setCurrentFrameIndex(idx);
     const targetFrame = currentDataset.frames[idx];
@@ -271,7 +272,22 @@ export default function App() {
     }
   };
 
-  // Automatic Timeline Jukebox playback loop
+  // Stage navigation linking 4-stage pipeline cleanly to workspace views
+  const handleSelectMissionStage = (stage: MissionStageId) => {
+    setActiveStage(stage);
+    if (stage === 1) {
+      setInspectorTab('data');
+      datasetBarRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } else if (stage === 2) {
+      setInspectorTab('overview');
+    } else if (stage === 3) {
+      setInspectorTab('synth');
+    } else if (stage === 4) {
+      playerControlsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  };
+
+  // Automatic Timeline Playback
   useEffect(() => {
     if (!audioState.isPlaying || appStage !== 'dashboard') return;
 
@@ -306,10 +322,10 @@ export default function App() {
         }
       } else if (e.code === 'ArrowRight') {
         e.preventDefault();
-        handleSelectFrameIndex((currentFrameIndex + 1) % currentDataset.frames.length);
+        handleSelectFrameIndex((safeFrameIdx + 1) % currentDataset.frames.length);
       } else if (e.code === 'ArrowLeft') {
         e.preventDefault();
-        handleSelectFrameIndex((currentFrameIndex - 1 + currentDataset.frames.length) % currentDataset.frames.length);
+        handleSelectFrameIndex((safeFrameIdx - 1 + currentDataset.frames.length) % currentDataset.frames.length);
       } else if (e.key.toLowerCase() === 'm') {
         e.preventDefault();
         handleUpdateAudioState({ isMuted: !audioState.isMuted });
@@ -326,9 +342,9 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [audioState, currentFrameIndex, currentDataset, currentFrame, datasets, appStage]);
+  }, [audioState, safeFrameIdx, currentDataset, currentFrame, datasets, appStage]);
 
-  // 1. CINEMATIC OPENING STAGE
+  // 1. CINEMATIC OPENING
   if (appStage === 'cinematic') {
     return (
       <CinematicOpening
@@ -337,7 +353,7 @@ export default function App() {
     );
   }
 
-  // 2. REGISTRATION PAGE STAGE (ONLY Register option, glassmorphism, backend hashing)
+  // 2. ACCESS PORTAL (Register, Login & Admin Login)
   if (appStage === 'register') {
     return (
       <RegistrationPage
@@ -350,135 +366,95 @@ export default function App() {
     );
   }
 
-  // 3. MAIN EARTH JUKEBOX DASHBOARD
+  // 3. MAIN EARTH JUKEBOX DASHBOARD (Clean, Uncrowded Scientific Workspace)
   return (
     <div
       className={`min-h-screen text-[#EAF4FF] flex flex-col font-sans transition-colors duration-200 ${
         highContrast ? 'bg-black text-white' : 'bg-[#050B18] text-[#EAF4FF]'
       }`}
     >
-      {/* Precision Telemetry Ribbon */}
-      <div className="w-full bg-[#050B18] border-b border-[#00D4FF]/15 px-4 sm:px-6 py-1.5 text-[11px] font-mono text-[#9BB0C9] flex items-center justify-between select-none">
-        <div className="flex items-center gap-3">
-          <span className="text-[#00D4FF] font-semibold tracking-wider uppercase font-bold">
-            NASA Earth Information Center
-          </span>
-          <span className="text-[#00D4FF]/30">·</span>
-          <span>Mission Elapsed: T+{Math.floor(sessionDurationSec / 60)}m {sessionDurationSec % 60}s</span>
-          <span className="hidden md:inline text-[#00D4FF]/30">·</span>
-          <span className="hidden md:inline font-mono text-[#9BB0C9]">Sensor: {currentDataset.missionSensor.split('/')[0]}</span>
-          <span className="hidden lg:inline text-[#00D4FF]/30">·</span>
-          <span className="hidden lg:inline text-[#9BB0C9]">Archive: {currentDataset.nasaDaac?.split('(')[0] || 'EOSDIS'}</span>
-        </div>
-
-        <div className="flex items-center gap-3 font-mono">
-          <span className="text-[#00D4FF] flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#00D4FF] animate-pulse" />
-            Stream: Nominal
-          </span>
-          <span className="text-[#00D4FF]/30">·</span>
-          <span className="text-[#EAF4FF] font-bold">Carrier: {currentFrame.audioPitchHz.toFixed(1)} Hz</span>
-        </div>
-      </div>
-
-      {/* Institutional NASA Space Science Header */}
-      <header className="sticky top-0 z-40 w-full border-b border-[#00D4FF]/20 bg-[#0A1628]/95 backdrop-blur-md px-4 sm:px-6 py-3 select-none glass-panel">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-          {/* NASA Meatball Vector & EIC Title */}
+      {/* Single Clean 3-Zone Header */}
+      <header className="sticky top-0 z-40 w-full border-b border-[#1B2B44] bg-[#070D19]/95 backdrop-blur-md px-4 sm:px-6 h-14 flex items-center select-none">
+        <div className="max-w-7xl w-full mx-auto flex items-center justify-between gap-4">
+          {/* Left: Institutional Brand */}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-[#0B3D91] border border-white/25 flex items-center justify-center text-white font-bold text-xs tracking-widest shadow-lg shrink-0">
+            <div className="w-8 h-8 rounded-full bg-[#0B3D91] border border-white/20 flex items-center justify-center text-white font-bold text-[10px] tracking-wider shrink-0">
               NASA
             </div>
-
-            <div className="flex flex-col">
-              <div className="flex items-center gap-2">
-                <span className="font-extrabold text-sm sm:text-base tracking-tight text-white uppercase text-gradient-space">
-                  Earth Jukebox
-                </span>
-                <span className="text-[#00D4FF]/40">·</span>
-                <span className="text-xs text-[#00D4FF] font-medium font-mono">EIC Sonification Lab</span>
-              </div>
-              <span className="text-[11px] text-[#9BB0C9] font-mono hidden sm:inline">
-                Translating Satellite Observations into Dynamic Audio • Space Apps Challenge
+            <div className="flex items-baseline gap-2">
+              <span className="font-bold text-sm sm:text-base tracking-tight text-white">
+                Earth Jukebox
+              </span>
+              <span className="hidden md:inline text-xs font-mono text-[#9BB0C9]">
+                EIC Sonification Lab
               </span>
             </div>
           </div>
 
-          {/* Action Tools: Live Stream Indicator, Cinematic View, How It Works, Spectrogram Analyst, Admin Console, Accessibility, Profile */}
-          <div className="flex items-center gap-2">
-            {/* Real-Time NASA Live Feed Telemetry Badge */}
-            <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#0A1628] border border-rose-500/30 text-[11px] font-mono shadow-sm">
-              <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-              <span className="text-rose-300 font-bold uppercase tracking-wider">NASA Live Stream</span>
-              <span className="text-white/30">|</span>
-              <span className="text-[#00D4FF] font-semibold">{liveNasaEvents.length} Active Events</span>
-            </div>
-
-            {/* Re-enter Cinematic Opening Button */}
+          {/* Center: Primary Navigation */}
+          <nav className="hidden md:flex items-center gap-1 text-xs font-medium text-[#9BB0C9]">
             <button
               onClick={() => setAppStage('cinematic')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#101F35] hover:bg-[#287BFF]/20 border border-[#00D4FF]/25 text-xs font-mono font-medium text-[#00D4FF] hover:text-white transition-all cursor-pointer"
-              title="Return to Full-Screen 3D Cinematic Opening View"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-[#101F35] hover:text-white transition-colors cursor-pointer"
             >
               <Film className="w-3.5 h-3.5 text-[#00D4FF]" />
-              <span className="hidden sm:inline">Cinematic View</span>
+              <span>Opening View</span>
             </button>
-
-            {/* 03. How It Works Pipeline Button */}
             <button
               onClick={() => setIsHowItWorksOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#101F35] hover:bg-[#287BFF]/20 border border-[#00D4FF]/25 text-xs font-medium text-[#EAF4FF] hover:text-[#00D4FF] transition-all cursor-pointer"
-              title="Inspect 4-Stage NASA Data to Sound Pipeline"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-[#101F35] hover:text-white transition-colors cursor-pointer"
             >
               <HelpCircle className="w-3.5 h-3.5 text-[#00D4FF]" />
-              <span className="hidden sm:inline">03. How It Works</span>
+              <span>Pipeline Guide</span>
             </button>
-
-            {/* EIC Spectrogram Intelligence Console Toggle */}
             <button
               onClick={() => setIsChatOpen(!isChatOpen)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium transition-all cursor-pointer ${
-                isChatOpen
-                  ? 'bg-[#00D4FF] text-[#050B18] font-bold border-[#00D4FF] shadow-[0_0_15px_rgba(0,212,255,0.4)]'
-                  : 'bg-[#101F35] hover:bg-[#287BFF]/20 border-[#00D4FF]/25 text-[#EAF4FF]'
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                isChatOpen ? 'bg-[#101F35] text-[#00D4FF]' : 'hover:bg-[#101F35] hover:text-white'
               }`}
-              title="Open EIC Science Intelligence & Spectrogram Analyst"
             >
-              <Bot className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Science AI</span>
+              <Bot className="w-3.5 h-3.5 text-[#00D4FF]" />
+              <span>Science Analyst</span>
             </button>
-
-            <AccessibilityToolbar
-              highContrast={highContrast}
-              onToggleHighContrast={() => setHighContrast(!highContrast)}
-              screenReaderSpeech={screenReaderSpeech}
-              onToggleScreenReaderSpeech={() => setScreenReaderSpeech(!screenReaderSpeech)}
-            />
-
-            {/* Admin Console */}
             <button
               onClick={() => setIsAdminOpen(true)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium transition-all cursor-pointer ${
-                currentUser?.role === 'admin'
-                  ? 'bg-amber-950/60 border-amber-500/50 text-amber-300'
-                  : 'bg-[#101F35] hover:bg-[#287BFF]/20 border-[#00D4FF]/25 text-[#EAF4FF]'
-              }`}
-              title="Administrator Operations, Engagement Analytics & Telemetry"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-[#101F35] hover:text-white transition-colors cursor-pointer"
             >
               <Shield className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden md:inline">Analytics</span>
+              <span>{currentUser?.role === 'admin' ? 'Admin Console' : 'Analytics'}</span>
+            </button>
+          </nav>
+
+          {/* Right: Share, Accessibility & Account */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsShareOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#0A1628] hover:bg-[#101F35] border border-[#1B2B44] text-xs font-mono text-[#EAF4FF] transition-colors cursor-pointer"
+              title="Share Session Link or Telemetry Card"
+            >
+              <Share2 className="w-3.5 h-3.5 text-[#00D4FF]" />
+              <span className="hidden sm:inline">Share</span>
             </button>
 
-            {/* Profile & Credentials */}
+            <div className="hidden sm:block">
+              <AccessibilityToolbar
+                highContrast={highContrast}
+                onToggleHighContrast={() => setHighContrast(!highContrast)}
+                screenReaderSpeech={screenReaderSpeech}
+                onToggleScreenReaderSpeech={() => setScreenReaderSpeech(!screenReaderSpeech)}
+              />
+            </div>
+
             {currentUser && (
               <button
                 onClick={() => setIsAuthOpen(true)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#101F35] hover:bg-[#287BFF]/20 border border-[#00D4FF]/25 text-xs font-medium text-[#EAF4FF] transition-all cursor-pointer"
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#0A1628] hover:bg-[#101F35] border border-[#1B2B44] text-xs text-[#EAF4FF] transition-colors cursor-pointer"
+                title="Account & Role Settings"
               >
                 <div className="w-5 h-5 rounded-full bg-[#00D4FF] text-[#050B18] font-bold text-[10px] flex items-center justify-center font-mono">
                   {currentUser.name.charAt(0)}
                 </div>
-                <span className="hidden sm:inline line-clamp-1 max-w-[110px] font-mono text-[11px]">
+                <span className="hidden sm:inline max-w-[100px] truncate font-mono text-[11px]">
                   {currentUser.name.split(' ')[0]}
                 </span>
               </button>
@@ -487,23 +463,34 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 flex flex-col gap-6">
-        {/* Top: Dataset Channel Selector Bar with Categories & Real-Time Sync */}
-        <DatasetSelectorBar
-          datasets={datasets}
-          selectedDatasetId={selectedDatasetId}
-          onSelectDataset={handleSelectDataset}
-          onRefreshLiveFeed={fetchLiveNasaEvents}
-          isFetchingLiveFeed={isFetchingLiveEvents}
-          liveEventCount={liveNasaEvents.length}
-          lastUpdatedText={lastLiveSyncTime ? `Live ${lastLiveSyncTime}` : 'Live Stream'}
+      {/* Main Scientific Workspace */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 flex flex-col gap-5">
+        {/* Channel Selector */}
+        <div ref={datasetBarRef}>
+          <DatasetSelectorBar
+            datasets={datasets}
+            selectedDatasetId={selectedDatasetId}
+            onSelectDataset={handleSelectDataset}
+            onRefreshLiveFeed={fetchLiveNasaEvents}
+            isFetchingLiveFeed={isFetchingLiveEvents}
+            liveEventCount={liveNasaEvents.length}
+            lastUpdatedText={lastLiveSyncTime ? `Synced ${lastLiveSyncTime}` : 'Live Feed'}
+          />
+        </div>
+
+        {/* Interactive 4-Stage Pipeline */}
+        <MissionStagesBar
+          activeStage={activeStage}
+          onSelectStage={handleSelectMissionStage}
+          datasetTitle={currentDataset.title}
+          currentYear={currentFrame.year}
+          pitchHz={currentFrame.audioPitchHz}
         />
 
-        {/* Center Grid: Interactive Globe Viewport + Spectrometer & Science Card */}
+        {/* Balanced 12-Column Globe + Tabbed Scientific Inspector */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-          {/* Left Column (7 cols): Interactive 3D/2D Earth Canvas with Live NASA Telemetry */}
-          <div className="lg:col-span-7 flex flex-col gap-3 min-h-[440px]">
+          {/* Left (7 cols): Unobstructed Interactive Earth Globe */}
+          <div className="lg:col-span-7 flex flex-col">
             <EarthGlobeCanvas
               dataset={currentDataset}
               currentFrame={currentFrame}
@@ -521,145 +508,215 @@ export default function App() {
             />
           </div>
 
-          {/* Right Column (5 cols): Live Spectrometer & Current Scientific Frame Insight */}
+          {/* Right (5 cols): Spectrogram + Single 3-Tab Inspector */}
           <div className="lg:col-span-5 flex flex-col gap-4">
-            {/* Audio Spectrometer & Waveform */}
             <AudioVisualizer
               dataset={currentDataset}
               currentFrame={currentFrame}
               isPlaying={audioState.isPlaying}
             />
 
-            {/* EIC Scientific Frame Insight Card */}
-            <div className="flex-1 rounded-2xl bg-[#101F35] border border-[#00D4FF]/20 p-5 flex flex-col justify-between gap-3 shadow-2xl glass-panel">
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between border-b border-[#00D4FF]/15 pb-2">
-                  <div className="flex items-center gap-1.5 text-xs text-[#00D4FF] font-mono">
-                    <Radio className="w-3.5 h-3.5 animate-pulse" />
-                    <span className="font-bold tracking-wider uppercase text-[10px]">Active Observation Epoch</span>
+            <div className="flex-1 rounded-xl bg-[#0A1628] border border-[#1B2B44] p-4 sm:p-5 flex flex-col gap-4">
+              {/* Clean 3-Tab Segmented Switch */}
+              <div className="grid grid-cols-3 gap-1 p-1 rounded-lg bg-[#050B18] border border-[#1B2B44] text-[11px] font-mono">
+                <button
+                  onClick={() => setInspectorTab('overview')}
+                  className={`py-1.5 rounded-md transition-colors cursor-pointer ${
+                    inspectorTab === 'overview'
+                      ? 'bg-[#101F35] text-[#00D4FF] font-semibold'
+                      : 'text-[#9BB0C9] hover:text-white'
+                  }`}
+                >
+                  Overview
+                </button>
+                <button
+                  onClick={() => setInspectorTab('data')}
+                  className={`py-1.5 rounded-md transition-colors cursor-pointer ${
+                    inspectorTab === 'data'
+                      ? 'bg-[#101F35] text-[#00D4FF] font-semibold'
+                      : 'text-[#9BB0C9] hover:text-white'
+                  }`}
+                >
+                  NASA Data
+                </button>
+                <button
+                  onClick={() => setInspectorTab('synth')}
+                  className={`py-1.5 rounded-md transition-colors cursor-pointer ${
+                    inspectorTab === 'synth'
+                      ? 'bg-[#101F35] text-[#00D4FF] font-semibold'
+                      : 'text-[#9BB0C9] hover:text-white'
+                  }`}
+                >
+                  Synthesizer
+                </button>
+              </div>
+
+              {/* TAB 1: OVERVIEW & GEOGRAPHICAL ANOMALIES */}
+              {inspectorTab === 'overview' && (
+                <div className="flex flex-col justify-between flex-1 gap-4">
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-baseline justify-between gap-2 border-b border-[#1B2B44] pb-2.5">
+                      <h2 className="text-sm font-semibold text-white">
+                        {currentDataset.title}
+                      </h2>
+                      <span className="text-[11px] font-mono text-[#00D4FF] tabular-nums shrink-0">
+                        {currentFrame.date}
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-[#9BB0C9] leading-relaxed">
+                      {currentFrame.scientificSummary}
+                    </p>
+
+                    <div className="flex flex-col gap-2 pt-1">
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-[#9BB0C9] flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-[#00D4FF]" />
+                        <span>Anomaly Regions (Click to Audition)</span>
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {currentFrame.hotspots.map((hs, hIdx) => {
+                          const isSelected = selectedHotspot?.name === hs.name;
+                          return (
+                            <button
+                              key={`hotspot-${hs.name}-${hIdx}`}
+                              onClick={() => {
+                                setSelectedHotspot(hs);
+                                setLiveProbeCount((p) => p + 1);
+                                const probeFreq =
+                                  currentFrame.audioPitchHz *
+                                  (1 + (hs.value / (currentDataset.maxVal || 100)) * 0.35);
+                                audioEngine.playProbeTone(
+                                  probeFreq,
+                                  0.6,
+                                  currentDataset.sonificationConfig.leadWave
+                                );
+                              }}
+                              className={`px-2.5 py-1 rounded-md text-[11px] font-mono border transition-colors cursor-pointer flex items-center gap-1.5 ${
+                                isSelected
+                                  ? 'bg-[#101F35] text-white border-[#00D4FF]'
+                                  : 'bg-[#050B18] border-[#1B2B44] text-[#9BB0C9] hover:text-white hover:border-[#2A4268]'
+                              }`}
+                            >
+                              <span>{hs.name}</span>
+                              <span className="text-[#00D4FF] tabular-nums">
+                                {hs.value} {currentDataset.unit.split(' ')[0]}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
-                  <span className="text-[10px] font-mono text-[#9BB0C9] tabular-nums">{currentFrame.date}</span>
+
+                  <div className="pt-3 border-t border-[#1B2B44] flex items-start gap-2.5 text-xs">
+                    <Volume2 className="w-4 h-4 text-[#00D4FF] shrink-0 mt-0.5" />
+                    <p className="text-[#9BB0C9] text-[11px] leading-relaxed">
+                      <strong className="text-[#EAF4FF] font-medium">Acoustic Mapping: </strong>
+                      {currentFrame.audioDescription}
+                    </p>
+                  </div>
                 </div>
+              )}
 
-                <div className="flex items-baseline justify-between gap-2 mt-1">
-                  <h2 className="text-sm font-mono font-bold text-white tracking-wide uppercase">
-                    {currentDataset.title}
-                  </h2>
-                  <span className="text-[10px] font-mono text-[#00D4FF] bg-[#0A1628] px-2 py-0.5 border border-[#00D4FF]/30 rounded-md uppercase font-bold">
-                    {currentFrame.label}
-                  </span>
-                </div>
+              {/* TAB 2: NASA EOSDIS PROVENANCE & LIVE EONET EVENTS */}
+              {inspectorTab === 'data' && (
+                <div className="flex flex-col gap-4 text-xs">
+                  <div className="flex flex-col gap-2 pb-3 border-b border-[#1B2B44]">
+                    <div className="flex items-center justify-between font-mono text-[11px]">
+                      <span className="text-[#9BB0C9] flex items-center gap-1.5">
+                        <Database className="w-3.5 h-3.5 text-[#00D4FF]" />
+                        Product ID
+                      </span>
+                      <span className="text-[#EAF4FF] font-semibold">
+                        {currentDataset.nasaProductId || 'NASA EIC Level-3/4'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between font-mono text-[11px]">
+                      <span className="text-[#9BB0C9]">Archive DAAC</span>
+                      <span className="text-[#EAF4FF] text-right truncate max-w-[210px]">
+                        {currentDataset.nasaDaac || 'NASA EOSDIS'}
+                      </span>
+                    </div>
+                    {currentDataset.dataProcessingPipeline && (
+                      <p className="text-[11px] text-[#9BB0C9] leading-relaxed pt-1">
+                        {currentDataset.dataProcessingPipeline}
+                      </p>
+                    )}
+                  </div>
 
-                <p className="text-xs text-[#9BB0C9] leading-relaxed font-sans">
-                  {currentFrame.scientificSummary}
-                </p>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-[#9BB0C9] flex items-center gap-1.5">
+                        <Radio className="w-3.5 h-3.5 text-[#00D4FF]" />
+                        <span>Live NASA EONET Telemetry ({liveNasaEvents.length})</span>
+                      </span>
+                    </div>
 
-                {/* Hotspots Carousel / List */}
-                <div className="flex flex-col gap-1.5 mt-1">
-                  <span className="text-[10px] font-mono uppercase tracking-wider text-[#9BB0C9] flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-[#00D4FF]" />
-                    <span>Geographical Anomaly Regions (Click to Probe):</span>
-                  </span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {currentFrame.hotspots.map((hs, hIdx) => {
-                      const isSelected = selectedHotspot?.name === hs.name;
-                      return (
+                    <div className="flex flex-col gap-1.5 max-h-44 overflow-y-auto pr-1">
+                      {liveNasaEvents.slice(0, 6).map((ev) => (
                         <button
-                          key={`hotspot-${hs.name}-${hIdx}`}
+                          key={ev.id}
                           onClick={() => {
+                            const hs: Hotspot = {
+                              name: ev.title,
+                              lat: ev.lat,
+                              lng: ev.lng,
+                              value: ev.magnitude || Math.round(ev.sonificationFreqHz),
+                              note: `${ev.categoryTitle}: ${ev.acousticNote}`,
+                            };
                             setSelectedHotspot(hs);
-                            setLiveProbeCount((p) => p + 1);
-                            const probeFreq =
-                              currentFrame.audioPitchHz *
-                              (1 + (hs.value / (currentDataset.maxVal || 100)) * 0.35);
                             audioEngine.playProbeTone(
-                              probeFreq,
-                              0.6,
+                              ev.sonificationFreqHz,
+                              0.65,
                               currentDataset.sonificationConfig.leadWave
                             );
                           }}
-                          className={`px-2.5 py-1 rounded-lg text-[10px] font-mono uppercase border transition-all cursor-pointer flex items-center gap-1.5 ${
-                            isSelected
-                              ? 'bg-[#00D4FF] text-[#050B18] font-bold border-[#00D4FF] shadow-sm'
-                              : 'bg-[#0A1628] border-[#00D4FF]/20 text-[#EAF4FF] hover:border-[#00D4FF]'
-                          }`}
+                          className="flex items-center justify-between px-3 py-2 rounded-lg bg-[#050B18] hover:bg-[#101F35] border border-[#1B2B44] text-left transition-colors cursor-pointer"
                         >
-                          <span className="font-semibold">{hs.name}</span>
-                          <span className="font-mono tabular-nums text-[#00D4FF]">
-                            ({hs.value} {currentDataset.unit})
+                          <div className="flex flex-col min-w-0 pr-2">
+                            <span className="text-[11px] font-medium text-[#EAF4FF] truncate">
+                              {ev.title}
+                            </span>
+                            <span className="text-[10px] font-mono text-[#9BB0C9]">
+                              {ev.categoryTitle} · {ev.lat.toFixed(1)}°, {ev.lng.toFixed(1)}°
+                            </span>
+                          </div>
+                          <span className="text-[11px] font-mono text-[#00D4FF] shrink-0 tabular-nums">
+                            {ev.sonificationFreqHz.toFixed(0)} Hz
                           </span>
                         </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* NASA Provenance & Data Processing Details */}
-                <div className="p-3 rounded-xl bg-[#0A1628]/80 border border-[#00D4FF]/15 flex flex-col gap-1.5 text-[10px] font-mono mt-1">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-[#00D4FF] font-bold uppercase">
-                      <Database className="w-3 h-3" />
-                      <span>NASA EOSDIS Product:</span>
+                      ))}
                     </div>
-                    <span className="font-mono text-[#EAF4FF] bg-[#050B18] px-2 py-0.5 rounded border border-[#00D4FF]/20 font-bold">
-                      {currentDataset.nasaProductId || 'NASA EIC Level-3/4'}
-                    </span>
                   </div>
-
-                  <div className="flex items-center justify-between text-[#9BB0C9]">
-                    <span className="uppercase">Archive DAAC:</span>
-                    <span className="text-[#EAF4FF] text-right truncate max-w-[220px]">
-                      {currentDataset.nasaDaac || 'NASA EOSDIS'}
-                    </span>
-                  </div>
-
-                  {currentDataset.dataProcessingPipeline && (
-                    <div className="pt-1.5 border-t border-[#00D4FF]/15 text-[#9BB0C9] leading-relaxed font-sans text-[10px]">
-                      <span className="font-mono uppercase font-semibold text-[#00D4FF]">Data Processing: </span>
-                      <span>{currentDataset.dataProcessingPipeline}</span>
-                    </div>
-                  )}
                 </div>
-              </div>
+              )}
 
-              {/* Accessible Sensory Audio Guidance Badge */}
-              <div className="p-3 rounded-xl bg-[#0A1628]/80 border border-[#00D4FF]/15 text-[11px] text-[#EAF4FF] flex items-start gap-2.5">
-                <Volume2 className="w-4 h-4 text-[#00D4FF] shrink-0 mt-0.5" />
-                <div className="flex flex-col gap-0.5">
-                  <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-[#00D4FF]">Acoustic Audio Signature:</span>
-                  <span className="text-[#9BB0C9] text-[11px] leading-normal font-sans">{currentFrame.audioDescription}</span>
-                </div>
-              </div>
+              {/* TAB 3: SONIFICATION SYNTHESIZER */}
+              {inspectorTab === 'synth' && (
+                <SonificationSynthesizerPanel
+                  dataset={currentDataset}
+                  currentFrame={currentFrame}
+                  audioState={audioState}
+                  onUpdateAudioState={handleUpdateAudioState}
+                />
+              )}
             </div>
           </div>
         </div>
 
-        {/* Bottom Section: Jukebox Player Controls & Acoustic Tuning Rack */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          {/* Jukebox Transport Controls (7 cols) */}
-          <div className="lg:col-span-7">
-            <JukeboxPlayerControls
-              dataset={currentDataset}
-              currentFrameIndex={currentFrameIndex}
-              onSelectFrameIndex={handleSelectFrameIndex}
-              audioState={audioState}
-              onUpdateAudioState={handleUpdateAudioState}
-            />
-          </div>
-
-          {/* Sonification Synthesizer Rack (5 cols) */}
-          <div className="lg:col-span-5">
-            <SonificationSynthesizerPanel
-              dataset={currentDataset}
-              currentFrame={currentFrame}
-              audioState={audioState}
-              onUpdateAudioState={handleUpdateAudioState}
-            />
-          </div>
+        {/* Full-Width Clean Epoch Transport & Previous Year Comparator */}
+        <div ref={playerControlsRef}>
+          <JukeboxPlayerControls
+            dataset={currentDataset}
+            currentFrameIndex={safeFrameIdx}
+            onSelectFrameIndex={handleSelectFrameIndex}
+            audioState={audioState}
+            onUpdateAudioState={handleUpdateAudioState}
+          />
         </div>
       </main>
 
-      {/* EIC Science Intelligence & Spectrogram Analyst Console */}
+      {/* Modals & Drawers */}
       <AeroSonicChatbot
         dataset={currentDataset}
         currentFrame={currentFrame}
@@ -668,7 +725,6 @@ export default function App() {
         onClose={() => setIsChatOpen(false)}
       />
 
-      {/* Auth Modal */}
       <AuthModal
         currentUser={currentUser}
         isOpen={isAuthOpen}
@@ -677,7 +733,6 @@ export default function App() {
         onLogout={handleLogout}
       />
 
-      {/* Admin Dashboard */}
       <AdminDashboard
         currentUser={currentUser}
         datasets={datasets}
@@ -690,28 +745,31 @@ export default function App() {
         liveRecordingCount={liveRecordingCount}
       />
 
-      {/* 3. How It Works Pipeline Modal */}
       <HowItWorksModal
         isOpen={isHowItWorksOpen}
         onClose={() => setIsHowItWorksOpen(false)}
       />
 
-      {/* Footer */}
-      <footer className="border-t border-[#00D4FF]/15 bg-[#050B18] px-4 py-4 text-center text-xs text-[#9BB0C9] mt-auto select-none">
+      <SessionShareModal
+        isOpen={isShareOpen}
+        onClose={() => setIsShareOpen(false)}
+        dataset={currentDataset}
+        currentFrame={currentFrame}
+        frameIndex={safeFrameIdx}
+        audioState={audioState}
+      />
+
+      {/* Minimal Footer */}
+      <footer className="border-t border-[#1B2B44] bg-[#050B18] px-4 sm:px-6 py-3.5 text-xs text-[#9BB0C9] mt-auto select-none">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 font-mono text-[11px]">
           <span>
-            NASA Space Apps Challenge • NASA Earth Information Center (EIC) Sonification Lab
+            NASA Space Apps Challenge · Earth Information Center Sonification Lab
           </span>
-          <div className="flex items-center gap-3 text-[#00D4FF]">
-            <span>Web Audio PCM 48kHz</span>
-            <span className="text-[#9BB0C9]/40">•</span>
-            <span>Gemini 3.8 Flash Intelligence</span>
-            <span className="text-[#9BB0C9]/40">•</span>
-            <span>NASA Section 508 A11y</span>
-          </div>
+          <span className="tabular-nums text-[#9BB0C9]">
+            Session {Math.floor(sessionDurationSec / 60)}m {sessionDurationSec % 60}s · Sensor {currentDataset.missionSensor.split('/')[0]} · 48 kHz Web Audio
+          </span>
         </div>
       </footer>
     </div>
   );
 }
-

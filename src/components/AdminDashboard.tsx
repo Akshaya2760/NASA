@@ -78,6 +78,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [telemetryHealth, setTelemetryHealth] = useState<any>(null);
   const [logFilter, setLogFilter] = useState<'all' | 'error' | 'warn' | 'info'>('all');
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   // Custom new dataset form state
   const [isAddingNew, setIsAddingNew] = useState(false);
@@ -286,13 +287,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  // Handle user deletion
+  // Handle user deletion (two-click inline confirmation)
   const handleDeleteUser = async (userId: string) => {
-    if (!window.confirm('Are you sure you want to remove this user from the registry?')) return;
+    if (confirmDeleteId !== userId) {
+      setConfirmDeleteId(userId);
+      setTimeout(() => setConfirmDeleteId((prev) => (prev === userId ? null : prev)), 4000);
+      return;
+    }
     try {
       const res = await fetch(`/api/admin/users/${userId}`, { method: 'DELETE' });
       if (res.ok) {
         setUsersList((prev) => prev.filter((u) => u.id !== userId));
+        setConfirmDeleteId(null);
         setUserNotice('Investigator account removed from registry.');
         setTimeout(() => setUserNotice(null), 2500);
         fetchLogs();
@@ -611,10 +617,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <td className="py-2.5 px-3 text-right">
                           <button
                             onClick={() => handleDeleteUser(u.id)}
-                            className="p-1 rounded text-rose-400 hover:text-rose-200 hover:bg-rose-950/50 transition cursor-pointer"
-                            title="Delete investigator account"
+                            className={`px-2 py-1 rounded transition cursor-pointer inline-flex items-center gap-1 ${
+                              confirmDeleteId === u.id
+                                ? 'bg-rose-600 text-white text-[10px] font-bold'
+                                : 'text-rose-400 hover:text-rose-200 hover:bg-rose-950/50'
+                            }`}
+                            title={confirmDeleteId === u.id ? 'Click again to confirm deletion' : 'Delete investigator account'}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
+                            {confirmDeleteId === u.id && <span>Confirm</span>}
                           </button>
                         </td>
                       </tr>
@@ -1260,33 +1271,113 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         )}
 
-        {/* TAB 4: SYSTEM TELEMETRY */}
+        {/* TAB 4: ERRORS & SYSTEM ACTIVITY */}
         {activeTab === 'telemetry' && (
           <div className="flex-1 overflow-y-auto flex flex-col gap-4 text-xs pr-1">
+            {/* Service Status Cards */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="p-3 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col">
-                <span className="text-slate-400 text-[11px]">AudioContext Status</span>
-                <span className="text-emerald-400 font-mono text-sm font-bold mt-1">ONLINE / ACTIVE</span>
+              <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col gap-1">
+                <span className="text-slate-400 text-[11px]">AudioContext DSP</span>
+                <span className="text-emerald-400 font-mono text-sm font-bold">ONLINE · 48 kHz</span>
               </div>
-              <div className="p-3 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col">
-                <span className="text-slate-400 text-[11px]">Sample Rate</span>
-                <span className="text-sky-400 font-mono text-sm font-bold mt-1">48,000 Hz</span>
+              <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col gap-1">
+                <span className="text-slate-400 text-[11px]">NASA EONET v3 Feed</span>
+                <span className="text-sky-400 font-mono text-sm font-bold">
+                  {telemetryHealth?.nasaEonet || 'NOMINAL'}
+                </span>
               </div>
-              <div className="p-3 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col">
-                <span className="text-slate-400 text-[11px]">Active Voice Chains</span>
-                <span className="text-white font-mono text-sm font-bold mt-1">6 Active Chains</span>
+              <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col gap-1">
+                <span className="text-slate-400 text-[11px]">Registered Accounts</span>
+                <span className="text-white font-mono text-sm font-bold tabular-nums">
+                  {telemetryHealth?.registeredUsersCount ?? usersList.length} Stored
+                </span>
               </div>
-              <div className="p-3 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col">
-                <span className="text-slate-400 text-[11px]">AeroSonic AI Model</span>
-                <span className="text-purple-400 font-mono text-sm font-bold mt-1">gemini-3.8-flash</span>
+              <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col gap-1">
+                <span className="text-slate-400 text-[11px]">Captured Errors</span>
+                <span className={`font-mono text-sm font-bold tabular-nums ${
+                  systemLogs.some((l) => l.level === 'error') ? 'text-rose-400' : 'text-emerald-400'
+                }`}>
+                  {systemLogs.filter((l) => l.level === 'error').length} Errors
+                </span>
               </div>
             </div>
 
-            <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col gap-2">
-              <span className="font-semibold text-white">EIC Sonification Engine Architecture</span>
-              <p className="text-slate-400 leading-relaxed text-[11px]">
-                The Earth Jukebox dynamically processes optical, infrared, and radar imagery into a multi-layered acoustic field. Primary metrics modulate a bandpassed harmonic carrier oscillator, while long-term deviations control the detuning of a sub-bass foundation. Stereo panning aligns with the instantaneous rotational azimuth of the observer.
-              </p>
+            {/* Filter & Diagnostic Action Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-slate-900/70 border border-slate-800">
+              <div className="flex items-center gap-1.5">
+                {(['all', 'info', 'warn', 'error'] as const).map((lvl) => (
+                  <button
+                    key={lvl}
+                    onClick={() => setLogFilter(lvl)}
+                    className={`px-2.5 py-1 rounded-lg font-mono text-[11px] uppercase transition cursor-pointer border ${
+                      logFilter === lvl
+                        ? 'bg-sky-500/20 text-sky-300 border-sky-500/40 font-semibold'
+                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                    }`}
+                  >
+                    {lvl} ({lvl === 'all' ? systemLogs.length : systemLogs.filter((l) => l.level === lvl).length})
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleRunDiagnostic}
+                  className="px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs transition cursor-pointer flex items-center gap-1.5"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Run Diagnostic</span>
+                </button>
+                <button
+                  onClick={fetchLogs}
+                  disabled={loadingLogs}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs transition cursor-pointer flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingLogs ? 'animate-spin' : ''}`} />
+                  <span>Refresh Logs</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Live Activity & Error Log Stream */}
+            <div className="rounded-xl border border-slate-800 bg-slate-950 overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-slate-800 bg-slate-900/60 flex items-center justify-between">
+                <span className="font-mono text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
+                  Application Activity & Error Stream
+                </span>
+                <span className="font-mono text-[11px] text-slate-500 tabular-nums">
+                  {filteredLogs.length} entries
+                </span>
+              </div>
+
+              <div className="divide-y divide-slate-900 max-h-72 overflow-y-auto font-mono text-[11px]">
+                {filteredLogs.length === 0 ? (
+                  <div className="py-8 text-center text-slate-500">
+                    {loadingLogs ? 'Loading application telemetry...' : 'No telemetry entries match the selected severity filter.'}
+                  </div>
+                ) : (
+                  filteredLogs.map((log) => (
+                    <div key={log.id} className="px-4 py-2.5 flex items-start gap-3 hover:bg-slate-900/40">
+                      <span className="text-slate-500 shrink-0 tabular-nums">
+                        {new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}
+                      </span>
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[10px] uppercase shrink-0 font-semibold ${
+                          log.level === 'error'
+                            ? 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                            : log.level === 'warn'
+                            ? 'bg-amber-950 text-amber-300 border border-amber-500/40'
+                            : 'bg-sky-950 text-sky-300 border border-sky-500/30'
+                        }`}
+                      >
+                        {log.level}
+                      </span>
+                      <span className="text-slate-400 shrink-0 min-w-[96px]">[{log.service}]</span>
+                      <span className="text-slate-200 font-sans text-xs">{log.message}</span>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         )}

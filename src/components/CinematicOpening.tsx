@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Volume2, VolumeX, Sparkles, Satellite, Compass, Shield } from 'lucide-react';
+import { ArrowRight, Volume2, VolumeX } from 'lucide-react';
+import { audioEngine } from '../audio/AudioEngine';
 
 interface CinematicOpeningProps {
   onBeginExploration: () => void;
@@ -9,6 +10,7 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [ambientAudio, setAmbientAudio] = useState(false);
+  const [hasWelcomed, setHasWelcomed] = useState(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
 
   // Initialize and run Canvas Cinematic 3D Earth, Stars, Satellites & Cosmic Particles
@@ -30,92 +32,56 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
     window.addEventListener('resize', handleResize);
 
     // 1. Generate Realistic Multi-Depth Stars
-    const starCount = 380;
+    const starCount = 340;
     const stars = Array.from({ length: starCount }, () => ({
       x: Math.random() * width,
       y: Math.random() * height,
-      size: Math.random() * 1.8 + 0.3,
-      alpha: Math.random() * 0.8 + 0.2,
-      speed: Math.random() * 0.08 + 0.02,
-      layer: Math.floor(Math.random() * 3), // 0: distant, 1: mid, 2: foreground
+      size: Math.random() * 1.6 + 0.3,
+      alpha: Math.random() * 0.75 + 0.2,
+      speed: Math.random() * 0.06 + 0.015,
+      layer: Math.floor(Math.random() * 3),
       color:
         Math.random() > 0.8
           ? '#00D4FF'
-          : Math.random() > 0.6
+          : Math.random() > 0.5
           ? '#EAF4FF'
-          : Math.random() > 0.3
-          ? '#9BB0C9'
-          : '#FFDFBA',
-      twinkleSpeed: Math.random() * 0.03 + 0.008,
+          : '#9BB0C9',
+      twinkleSpeed: Math.random() * 0.025 + 0.008,
       twinkleOffset: Math.random() * Math.PI * 2,
     }));
 
     // 2. Cosmic Dust / Solar Wind Particles
-    const particleCount = 45;
+    const particleCount = 36;
     const particles = Array.from({ length: particleCount }, () => ({
       x: Math.random() * width,
       y: Math.random() * height,
-      vx: (Math.random() - 0.5) * 0.35 + 0.15,
-      vy: (Math.random() - 0.5) * 0.2,
-      radius: Math.random() * 2 + 0.5,
-      alpha: Math.random() * 0.5 + 0.1,
+      vx: (Math.random() - 0.5) * 0.3 + 0.12,
+      vy: (Math.random() - 0.5) * 0.15,
+      radius: Math.random() * 1.8 + 0.5,
+      alpha: Math.random() * 0.4 + 0.1,
     }));
 
-    // 3. Realistic Satellites Orbiting
     let sat1Angle = 0.4;
     let sat2Angle = 2.8;
-
-    // Continental landmass points approximation (lat/lng in radians)
-    const LAND_POINTS: [number, number][] = [
-      // North America
-      [-1.8, 0.9], [-1.6, 0.7], [-1.4, 0.5], [-1.7, 0.4], [-2.1, 0.7], [-2.2, 1.0],
-      // South America
-      [-1.1, 0.1], [-0.8, -0.4], [-1.0, -0.8], [-1.2, -0.2],
-      // Eurasia
-      [0.2, 0.9], [0.8, 1.1], [1.8, 1.0], [2.2, 0.6], [1.3, 0.4], [0.5, 0.6],
-      // Africa
-      [0.2, 0.5], [0.5, 0.1], [0.4, -0.5], [0.1, -0.5], [-0.1, 0.1],
-      // Australia
-      [2.1, -0.4], [2.5, -0.5], [2.3, -0.7], [2.0, -0.5],
-    ];
-
     let rotation = 0;
-    let startTime = performance.now();
 
     const render = (time: number) => {
       ctx.clearRect(0, 0, width, height);
 
-      // Deep space background gradient
       const bgGrad = ctx.createRadialGradient(
         width * 0.5,
-        height * 0.5,
+        height * 0.45,
         50,
         width * 0.5,
-        height * 0.5,
-        Math.max(width, height) * 0.8
+        height * 0.45,
+        Math.max(width, height) * 0.85
       );
       bgGrad.addColorStop(0, '#0A1628');
-      bgGrad.addColorStop(0.5, '#050B18');
+      bgGrad.addColorStop(0.55, '#050B18');
       bgGrad.addColorStop(1, '#02050B');
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, width, height);
 
-      // Subtle Nebula Cloud in upper right
-      const nebulaGrad = ctx.createRadialGradient(
-        width * 0.75,
-        height * 0.25,
-        10,
-        width * 0.75,
-        height * 0.25,
-        width * 0.45
-      );
-      nebulaGrad.addColorStop(0, 'rgba(40, 123, 255, 0.08)');
-      nebulaGrad.addColorStop(0.5, 'rgba(0, 212, 255, 0.03)');
-      nebulaGrad.addColorStop(1, 'transparent');
-      ctx.fillStyle = nebulaGrad;
-      ctx.fillRect(0, 0, width, height);
-
-      // Draw Multi-Depth Stars with realistic twinkle
       for (let i = 0; i < stars.length; i++) {
         const s = stars[i];
         const twinkle = 0.5 + 0.5 * Math.sin(time * s.twinkleSpeed + s.twinkleOffset);
@@ -125,13 +91,11 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
         ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
         ctx.fill();
 
-        // Parallax drift
         s.x -= s.speed;
         if (s.x < 0) s.x = width;
       }
       ctx.globalAlpha = 1;
 
-      // Draw Cosmic Particles / Solar Wind
       for (let i = 0; i < particles.length; i++) {
         const p = particles[i];
         ctx.fillStyle = '#00D4FF';
@@ -149,54 +113,47 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
       }
       ctx.globalAlpha = 1;
 
-      // Earth Positioning
-      const earthRadius = Math.min(width, height) * 0.28;
+      const earthRadius = Math.min(width, height) * 0.25;
       const earthCX = width * 0.5;
-      const earthCY = height * 0.48;
+      const earthCY = height * 0.42;
 
-      // 4. Atmospheric Outer Glow Layers (Rayleigh Scattering)
-      // Layer 1: Broad soft outer corona
       const outerCorona = ctx.createRadialGradient(
         earthCX,
         earthCY,
         earthRadius * 0.95,
         earthCX,
         earthCY,
-        earthRadius * 1.35
+        earthRadius * 1.32
       );
-      outerCorona.addColorStop(0, 'rgba(0, 212, 255, 0.35)');
-      outerCorona.addColorStop(0.35, 'rgba(40, 123, 255, 0.2)');
-      outerCorona.addColorStop(0.7, 'rgba(10, 22, 40, 0.1)');
+      outerCorona.addColorStop(0, 'rgba(0, 212, 255, 0.3)');
+      outerCorona.addColorStop(0.4, 'rgba(40, 123, 255, 0.16)');
       outerCorona.addColorStop(1, 'transparent');
       ctx.fillStyle = outerCorona;
       ctx.beginPath();
-      ctx.arc(earthCX, earthCY, earthRadius * 1.35, 0, Math.PI * 2);
+      ctx.arc(earthCX, earthCY, earthRadius * 1.32, 0, Math.PI * 2);
       ctx.fill();
 
-      // Layer 2: Vivid inner atmospheric limb
       const atmosphericLimb = ctx.createRadialGradient(
         earthCX,
         earthCY,
         earthRadius * 0.96,
         earthCX,
         earthCY,
-        earthRadius * 1.08
+        earthRadius * 1.07
       );
-      atmosphericLimb.addColorStop(0, 'rgba(0, 212, 255, 0.7)');
-      atmosphericLimb.addColorStop(0.5, 'rgba(40, 123, 255, 0.4)');
+      atmosphericLimb.addColorStop(0, 'rgba(0, 212, 255, 0.65)');
+      atmosphericLimb.addColorStop(0.5, 'rgba(40, 123, 255, 0.35)');
       atmosphericLimb.addColorStop(1, 'transparent');
       ctx.fillStyle = atmosphericLimb;
       ctx.beginPath();
-      ctx.arc(earthCX, earthCY, earthRadius * 1.08, 0, Math.PI * 2);
+      ctx.arc(earthCX, earthCY, earthRadius * 1.07, 0, Math.PI * 2);
       ctx.fill();
 
-      // 5. Earth Base Sphere with Ocean Gradient & Deep Oceanic Depth
       ctx.save();
       ctx.beginPath();
       ctx.arc(earthCX, earthCY, earthRadius, 0, Math.PI * 2);
       ctx.clip();
 
-      // Ocean base texture with spherical shading
       const oceanGrad = ctx.createRadialGradient(
         earthCX - earthRadius * 0.35,
         earthCY - earthRadius * 0.35,
@@ -206,21 +163,14 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
         earthRadius
       );
       oceanGrad.addColorStop(0, '#103565');
-      oceanGrad.addColorStop(0.4, '#0A2145');
-      oceanGrad.addColorStop(0.8, '#06132A');
+      oceanGrad.addColorStop(0.45, '#0A2145');
+      oceanGrad.addColorStop(0.85, '#06132A');
       oceanGrad.addColorStop(1, '#020610');
       ctx.fillStyle = oceanGrad;
       ctx.fill();
 
-      // Slowly rotating continents
-      rotation += 0.0035;
+      rotation += 0.003;
 
-      // Draw rotating continents/islands
-      ctx.fillStyle = 'rgba(0, 212, 255, 0.25)';
-      ctx.strokeStyle = 'rgba(0, 212, 255, 0.6)';
-      ctx.lineWidth = 1.2;
-
-      // Draw latitude / longitude grid lines on Earth
       ctx.strokeStyle = 'rgba(0, 212, 255, 0.1)';
       ctx.lineWidth = 0.8;
       for (let lat = -60; lat <= 60; lat += 30) {
@@ -231,7 +181,6 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
         ctx.stroke();
       }
 
-      // Draw rotating continental land outlines
       for (let i = 0; i < 18; i++) {
         const lon = ((i * 20 + rotation * 57.3) % 360) - 180;
         const xRad = (lon * Math.PI) / 180;
@@ -243,13 +192,12 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
 
           ctx.fillStyle = i % 2 === 0 ? 'rgba(40, 123, 255, 0.35)' : 'rgba(0, 212, 255, 0.3)';
           ctx.beginPath();
-          ctx.ellipse(px, py, Math.abs(rw), rh, (i * 0.2), 0, Math.PI * 2);
+          ctx.ellipse(px, py, Math.abs(rw), rh, i * 0.2, 0, Math.PI * 2);
           ctx.fill();
         }
       }
 
-      // Swirling atmospheric white cloud bands
-      ctx.fillStyle = 'rgba(234, 244, 255, 0.12)';
+      ctx.fillStyle = 'rgba(234, 244, 255, 0.11)';
       for (let c = 0; c < 5; c++) {
         const cloudLon = ((c * 72 + rotation * 85) % 360) - 180;
         const cxRad = (cloudLon * Math.PI) / 180;
@@ -262,7 +210,6 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
         }
       }
 
-      // Day / Night Terminator Shading (Realistic Sun Angle from top-left)
       const sunShade = ctx.createRadialGradient(
         earthCX - earthRadius * 0.4,
         earthCY - earthRadius * 0.4,
@@ -271,50 +218,36 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
         earthCY + earthRadius * 0.3,
         earthRadius * 1.15
       );
-      sunShade.addColorStop(0, 'rgba(0, 212, 255, 0.05)');
-      sunShade.addColorStop(0.45, 'rgba(5, 11, 24, 0.2)');
-      sunShade.addColorStop(0.7, 'rgba(5, 11, 24, 0.7)');
-      sunShade.addColorStop(1, 'rgba(2, 5, 11, 0.94)');
+      sunShade.addColorStop(0, 'rgba(0, 212, 255, 0.04)');
+      sunShade.addColorStop(0.5, 'rgba(5, 11, 24, 0.25)');
+      sunShade.addColorStop(0.75, 'rgba(5, 11, 24, 0.72)');
+      sunShade.addColorStop(1, 'rgba(2, 5, 11, 0.95)');
       ctx.fillStyle = sunShade;
       ctx.fillRect(earthCX - earthRadius, earthCY - earthRadius, earthRadius * 2, earthRadius * 2);
 
       ctx.restore();
 
-      // 6. Subtle Orbiting Satellites with Vectors & Solar Panels
-      // Satellite 1: Low Earth Orbit (ISS / Terra)
       sat1Angle += 0.009;
       const sat1X = earthCX + Math.cos(sat1Angle) * (earthRadius * 1.25);
       const sat1Y = earthCY + Math.sin(sat1Angle) * (earthRadius * 0.55);
 
-      // Orbit path arc
-      ctx.strokeStyle = 'rgba(0, 212, 255, 0.15)';
+      ctx.strokeStyle = 'rgba(0, 212, 255, 0.14)';
       ctx.setLineDash([3, 6]);
       ctx.beginPath();
       ctx.ellipse(earthCX, earthCY, earthRadius * 1.25, earthRadius * 0.55, 0.15, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Draw Satellite 1 Body & Solar Wings
       ctx.save();
       ctx.translate(sat1X, sat1Y);
       ctx.rotate(sat1Angle + Math.PI / 2);
-
-      // Solar Wings
       ctx.fillStyle = '#00D4FF';
       ctx.fillRect(-10, -1.5, 7, 3);
       ctx.fillRect(3, -1.5, 7, 3);
-      // Main Chassis
       ctx.fillStyle = '#EAF4FF';
       ctx.fillRect(-2, -3, 4, 6);
-      // Flashing telemetry beacon
-      const beaconAlpha = 0.5 + 0.5 * Math.sin(time * 0.008);
-      ctx.fillStyle = `rgba(0, 212, 255, ${beaconAlpha})`;
-      ctx.beginPath();
-      ctx.arc(0, 0, 2, 0, Math.PI * 2);
-      ctx.fill();
       ctx.restore();
 
-      // Satellite 2: Polar Orbit (Aqua / ICESat-2)
       sat2Angle += 0.006;
       const sat2X = earthCX + Math.sin(sat2Angle) * (earthRadius * 0.45);
       const sat2Y = earthCY + Math.cos(sat2Angle) * (earthRadius * 1.28);
@@ -338,19 +271,28 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
     };
   }, []);
 
+  // Trigger entrance chime & welcome voice on first click anywhere or button press
+  const triggerWelcomeSequence = () => {
+    if (!hasWelcomed) {
+      setHasWelcomed(true);
+      audioEngine.playEntranceChime('portal');
+      audioEngine.speakWelcomeMessage('Welcome to NASA Earth Jukebox. Listen to the changing planet.');
+    }
+  };
+
   // Ambient sound synthesizer for subtle space drone
-  const toggleAmbientAudio = () => {
+  const toggleAmbientAudio = (e: React.MouseEvent) => {
+    e.stopPropagation();
     if (!audioCtxRef.current) {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const ctx = new AudioContextClass();
       audioCtxRef.current = ctx;
 
-      // Sub-drone
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(55, ctx.currentTime); // A1 note
-      gain.gain.setValueAtTime(0.04, ctx.currentTime);
+      osc.frequency.setValueAtTime(55, ctx.currentTime);
+      gain.gain.setValueAtTime(0.035, ctx.currentTime);
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start();
@@ -359,6 +301,7 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
     if (audioCtxRef.current.state === 'suspended') {
       audioCtxRef.current.resume();
       setAmbientAudio(true);
+      triggerWelcomeSequence();
     } else if (audioCtxRef.current.state === 'running') {
       if (ambientAudio) {
         audioCtxRef.current.suspend();
@@ -366,13 +309,16 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
       } else {
         audioCtxRef.current.resume();
         setAmbientAudio(true);
+        triggerWelcomeSequence();
       }
     }
   };
 
-  const handleBegin = () => {
+  const handleBegin = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    audioEngine.playEntranceChime('portal');
+    audioEngine.speakWelcomeMessage('Welcome to NASA Earth Jukebox. Please register or sign in to enter the observatory.');
     setIsTransitioning(true);
-    // Smooth transition delay to allow zoom fade animation
     setTimeout(() => {
       if (audioCtxRef.current) {
         audioCtxRef.current.close().catch(() => {});
@@ -381,101 +327,92 @@ export const CinematicOpening: React.FC<CinematicOpeningProps> = ({ onBeginExplo
     }, 600);
   };
 
+  const STAGES = [
+    { num: '01', title: 'Satellite Data', detail: 'MODIS, OCO-2, GRACE-FO' },
+    { num: '02', title: 'Data Processing', detail: 'Anomaly Extraction' },
+    { num: '03', title: 'Sonification Engine', detail: 'Pitch & Rhythm Mapping' },
+    { num: '04', title: 'Earth Jukebox', detail: 'Synchronized Audio-Visuals' },
+  ];
+
   return (
     <div
+      onClick={triggerWelcomeSequence}
       className={`fixed inset-0 z-50 overflow-hidden bg-[#050B18] text-[#EAF4FF] transition-all duration-700 select-none ${
         isTransitioning ? 'opacity-0 scale-105 pointer-events-none' : 'opacity-100 scale-100'
       }`}
     >
-      {/* Background Canvas */}
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block" />
 
-      {/* Top NASA Badge & Sound Control */}
-      <div className="absolute top-6 left-6 right-6 z-20 flex items-center justify-between">
+      {/* Clean Single-Row Top Header */}
+      <header className="absolute top-0 left-0 right-0 z-20 px-6 sm:px-10 py-5 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          {/* NASA Meatball vector */}
-          <div className="w-10 h-10 rounded-full bg-[#0B3D91] border border-white/20 flex items-center justify-center font-bold text-xs tracking-widest text-white shadow-lg">
+          <div className="w-9 h-9 rounded-full bg-[#0B3D91] border border-white/25 flex items-center justify-center font-bold text-[11px] tracking-widest text-white">
             NASA
           </div>
-          <div className="flex flex-col">
-            <span className="font-mono text-[11px] font-bold tracking-widest uppercase text-[#00D4FF]">
-              Earth Information Center
-            </span>
-            <span className="text-[10px] text-[#9BB0C9] font-mono">
-              Space Apps Challenge • Global Sonification Lab
-            </span>
-          </div>
+          <span className="text-sm font-semibold tracking-tight text-white">
+            Earth Information Center
+          </span>
         </div>
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={toggleAmbientAudio}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-mono bg-[#0A1628]/80 hover:bg-[#101F35] border border-[#00D4FF]/25 text-[#9BB0C9] hover:text-[#EAF4FF] transition-all backdrop-blur-md"
-            title="Toggle Ambient Cosmic Drone"
-          >
-            {ambientAudio ? (
-              <>
-                <Volume2 className="w-3.5 h-3.5 text-[#00D4FF] animate-pulse" />
-                <span>SOUND ON</span>
-              </>
-            ) : (
-              <>
-                <VolumeX className="w-3.5 h-3.5" />
-                <span>AMBIENT SOUND</span>
-              </>
-            )}
-          </button>
-        </div>
-      </div>
+        <button
+          onClick={toggleAmbientAudio}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium bg-[#0A1628]/90 hover:bg-[#101F35] border border-[#1E3354] text-[#EAF4FF] transition-colors cursor-pointer"
+          title="Play Entrance Welcome Audio & Space Drone"
+        >
+          {ambientAudio ? (
+            <>
+              <Volume2 className="w-4 h-4 text-[#00D4FF]" />
+              <span>Audio Active</span>
+            </>
+          ) : (
+            <>
+              <VolumeX className="w-4 h-4 text-[#9BB0C9]" />
+              <span>Enable Welcome Audio</span>
+            </>
+          )}
+        </button>
+      </header>
 
-      {/* Bottom Center Hero Content & Call to Action */}
-      <div className="absolute bottom-12 left-0 right-0 z-20 flex flex-col items-center justify-center text-center px-6">
-        <div className="max-w-3xl flex flex-col items-center gap-3 animate-fade-in">
-          {/* Scientific Stream Badge */}
-          <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-[#101F35]/80 border border-[#00D4FF]/30 backdrop-blur-md shadow-lg">
-            <span className="w-2 h-2 rounded-full bg-[#00D4FF] animate-ping" />
-            <span className="font-mono text-[11px] font-semibold text-[#00D4FF] tracking-wider uppercase">
-              Operational Earth Observation Transduction
-            </span>
-          </div>
+      {/* Bottom Center Editorial Hero & 4-Stage Pipeline */}
+      <div className="absolute bottom-8 left-0 right-0 z-20 flex flex-col items-center justify-center text-center px-6">
+        <div className="max-w-3xl flex flex-col items-center gap-3">
+          <p className="text-xs font-mono uppercase tracking-[0.2em] text-[#00D4FF]">
+            NASA Space Apps Challenge · Multisensory Earth Science
+          </p>
 
-          {/* Main Title */}
-          <h1 className="text-4xl sm:text-6xl md:text-7xl font-extrabold tracking-tight text-white uppercase drop-shadow-2xl">
-            <span className="text-gradient-space">EARTH JUKEBOX</span>
+          <h1 className="text-4xl sm:text-6xl font-bold tracking-tight text-white">
+            Earth Jukebox
           </h1>
 
-          {/* Subtitle */}
-          <p className="text-lg sm:text-2xl font-light text-[#9BB0C9] tracking-wide max-w-xl">
+          <p className="text-lg sm:text-xl font-normal text-[#EAF4FF]/90 max-w-xl">
             Listen to the Changing Planet
           </p>
 
-          <p className="text-xs sm:text-sm text-[#9BB0C9]/80 max-w-lg leading-relaxed mt-1 hidden sm:block">
-            Translating optical, thermal, and radiometric satellite telemetry from MODIS, OCO-2, GRACE-FO, and VIIRS into dynamic real-time acoustic sonifications.
+          <p className="text-xs sm:text-sm text-[#9BB0C9] max-w-lg leading-relaxed hidden sm:block">
+            Translating optical, thermal, and radiometric satellite observations into real-time harmonic soundscapes.
           </p>
 
-          {/* Begin Exploration Button */}
-          <div className="mt-5">
+          <div className="mt-3">
             <button
               onClick={handleBegin}
-              className="group relative inline-flex items-center gap-3 px-8 py-4 rounded-xl font-mono text-sm uppercase tracking-wider font-bold text-[#050B18] bg-[#00D4FF] hover:bg-[#287BFF] hover:text-white transition-all duration-300 shadow-[0_0_28px_rgba(0,212,255,0.45)] hover:shadow-[0_0_36px_rgba(40,123,255,0.6)] cursor-pointer"
+              className="group inline-flex items-center gap-2.5 px-7 py-3.5 rounded-lg text-sm font-semibold text-[#050B18] bg-[#00D4FF] hover:bg-[#38BDF8] transition-colors cursor-pointer"
             >
               <span>Begin Exploration</span>
               <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
             </button>
           </div>
 
-          <div className="flex items-center gap-4 mt-4 font-mono text-[10px] text-[#9BB0C9]/70">
-            <span>MODIS</span>
-            <span>·</span>
-            <span>OCO-2</span>
-            <span>·</span>
-            <span>GRACE-FO</span>
-            <span>·</span>
-            <span>LANDSAT</span>
-            <span>·</span>
-            <span>VIIRS</span>
-            <span>·</span>
-            <span>GPM IMERG</span>
+          {/* 4 Mission Stages Strip */}
+          <div className="mt-6 w-full max-w-3xl grid grid-cols-2 sm:grid-cols-4 gap-3 pt-5 border-t border-white/10 text-left">
+            {STAGES.map((st) => (
+              <div key={st.num} className="flex flex-col gap-0.5 px-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-white">
+                  <span className="font-mono text-[#00D4FF]">{st.num}.</span>
+                  <span>{st.title}</span>
+                </div>
+                <span className="text-[11px] text-[#9BB0C9]">{st.detail}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
